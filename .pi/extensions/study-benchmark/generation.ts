@@ -1,3 +1,4 @@
+import { studyGrammar } from "./session.ts";
 const particles = new Set("は が を に で へ と も の から まで より や か て ば よ ね".split(" "));
 const auxiliaries = new Set("ます た ない だ です ぬ".split(" "));
 const punctuation = new Set("。、「」！？!?.,　 ");
@@ -206,11 +207,13 @@ export async function translateBatch(sentences: JapaneseSentence[], infer: Infer
 
 type Stage = "generation" | "translation" | "validation";
 type ExpansionPolicy = { maxPercent: number; maxWordsPerExercise: number };
-export function expansionCapacity(knownCount: number, percent: number) {
-  if (percent === 100) return 10 - knownCount;
-  return Math.min(10 - knownCount, Math.floor(knownCount * percent / (100 - percent)));
+export function expansionCapacity(knownCount: number, percent: number, size = 10) {
+  if (percent === 100) return size - knownCount;
+  return Math.min(size - knownCount, Math.floor(knownCount * percent / (100 - percent)));
 }
 type TrialOptions = {
+  size?: number;
+  previous?: ReviewExercise[];
   expansionPolicy?: ExpansionPolicy;
   vocabulary: { headword: string; reading: string; meaning: string; pos?: string; exampleJa?: string }[];
   targets: string[];
@@ -283,22 +286,22 @@ function summarizeUsage(exercises: AcceptedExercise[]) {
   };
 }
 
-export async function generateTrial({ vocabulary, targets, gate, analyze, infer, onCall, report, expansionPolicy = { maxPercent: 20, maxWordsPerExercise: 1 } }: TrialOptions) {
+export async function generateTrial({ vocabulary, targets, gate, analyze, infer, onCall, report, size = 10, previous = [], expansionPolicy = { maxPercent: 20, maxWordsPerExercise: 1 } }: TrialOptions) {
   const { maxPercent, maxWordsPerExercise } = expansionPolicy;
   if (!Number.isInteger(maxPercent) || maxPercent < 0 || maxPercent > 100 || !Number.isSafeInteger(maxWordsPerExercise) || maxWordsPerExercise < 0)
     throw new Error("Expansion policy requires integer maxPercent (0–100) and nonnegative integer maxWordsPerExercise.");
   const accepted: AcceptedExercise[] = [];
   const pending: AcceptedExercise[] = [];
   const rejected = new Map<string, { referenceJa: string; reason: string }>();
-  const seenJapanese = new Set<string>();
-  const seenEnglish = new Set<string>();
+  const seenJapanese = new Set(previous.map(item => japaneseKey(item.referenceJa)));
+  const seenEnglish = new Set(previous.map(item => englishKey(item.english)));
   const seenUsage: Usage[] = [];
   const targetProblems = new Map<string, string[]>();
   const abandonedTargets = new Map<string, { attempt: number; reasons: string[] }>();
   const calls = [];
   let formatFeedback = new Set<string>();
-  for (let attempt = 1; attempt <= 3 && accepted.length < 10; attempt++) {
-    const requested = 10 - accepted.length;
+  for (let attempt = 1; attempt <= 3 && accepted.length < size; attempt++) {
+    const requested = size - accepted.length;
     const preferredTargets = targets.filter(target => {
       if (abandonedTargets.has(target) || accepted.some(item => item.used.includes(target))) return false;
       const reasons = targetProblems.get(target) ?? [];
@@ -309,7 +312,7 @@ export async function generateTrial({ vocabulary, targets, gate, analyze, infer,
     const usage = summarizeUsage(accepted);
     onCall?.("generation", attempt);
     const authored = await request(infer, authorPrompt, {
-      count: requested, expansionPolicy, grammar: "polite-past", preferredTargets, vocabulary,
+      count: requested, expansionPolicy, grammar: studyGrammar[0], preferredTargets, vocabulary,
       ...(accepted.length ? { diversity: {
         coveredContent: usage.coveredContent.slice(0, 20),
         repeatedContent: usage.repeatedContent.slice(0, 5),
@@ -352,7 +355,7 @@ export async function generateTrial({ vocabulary, targets, gate, analyze, infer,
         formatFeedback.add("Each sentences entry must be a nonblank string under 200 characters.");
         return [];
       }
-      return [{ id: String((attempt - 1) * 10 + index + 1), targetGrammarId: "polite-past", referenceJa: value.normalize("NFC").trim() }];
+      return [{ id: String((attempt - 1) * 10 + index + 1), targetGrammarId: studyGrammar[0], referenceJa: value.normalize("NFC").trim() }];
     });
     const analyses = candidates.length ? await analyze(candidates.map(item => item.referenceJa)) : [];
     const survivors = [];
@@ -376,7 +379,7 @@ export async function generateTrial({ vocabulary, targets, gate, analyze, infer,
         contentWords.push(lemma);
         return true;
       });
-      if (item.targetGrammarId !== "polite-past" || !/(ました|ませんでした)$/.test(key)) {
+      if (item.targetGrammarId !== studyGrammar[0] || !/(ました|ませんでした)$/.test(key)) {
         block(item, "expected a polite-past verb ending in ました or ませんでした", deterministicRejections);
       } else if (!unknown.length && !used.length && !lemmas.size) {
         block(item, "no lexical item", deterministicRejections);
@@ -440,7 +443,7 @@ export async function generateTrial({ vocabulary, targets, gate, analyze, infer,
       }
     }
     const expanded = accepted.filter(item => item.words?.length).length;
-    const available = expansionCapacity(accepted.length - expanded, maxPercent) - expanded;
+    const available = expansionCapacity(accepted.length - expanded, maxPercent, size) - expanded;
     accepted.push(...pending.splice(0, Math.max(0, available)));
     const newlyAccepted = accepted.slice(before);
     const usageCounts = Object.fromEntries(targets.map(target =>

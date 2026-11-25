@@ -1,12 +1,13 @@
 # Architecture
 
-The implemented application is the project-local Pi benchmark under `.pi/extensions/study-benchmark/`. See the [roadmap](ROADMAP.md) for planned study features.
+The implemented application is the project-local Pi study and benchmark extension under `.pi/extensions/study-benchmark/`. See the [roadmap](ROADMAP.md) for planned study features.
 
 ## Components
 
 | Component | Responsibility |
 | --- | --- |
-| `index.ts` | Registers the benchmark, launches the local Python analyzer, calls Pi's model registry, and renders the report. The command requires an idle interactive Pi session at the project root. |
+| `index.ts` | Registers the study and benchmark commands, launches the local Python analyzer, calls Pi's model registry, and renders the report. The command requires an idle interactive Pi session at the project root. |
+| `session.ts` | Parses study arguments, exposes the supported grammar, and drives the answer, reference, and advance sequence using an injected view. |
 | `anki.ts` | Reads eligible Core 2000 cards via AnkiConnect v6 at `127.0.0.1:8765`. The query selects review cards outside learning and suspension. A review interval of at least 21 days marks a card as mature for sampling. |
 | `vocabulary.ts` | Merges known vocabulary by headword, reading, and meaning while preserving source provenance. Selects seeded practice samples and examples with known supporting vocabulary. Provides validated, atomic foundational vocabulary edits for explicit user actions. |
 | `analyze.py` | Returns Sudachi Mode C tokens with surface, dictionary form, part of speech, out-of-vocabulary status, and character offsets. |
@@ -24,6 +25,10 @@ The Core 2000 adapter maps `Vocabulary-Kanji`, `Vocabulary-Kana`, `Vocabulary-En
 5. Prefer known-only exercises. Hold eligible expanded exercises until the actual accepted count supports them under the percentage cap. Refills use rejection and diversity feedback, and can retire repeatedly implicated preferred targets. A full benchmark runs three seeded trials with ten exercise slots and up to two refills each.
 
 Each inference stage uses the selected Pi model with a fresh context. The benchmark keeps generation and review data in memory and renders results in Pi's editor.
+
+## Interactive study
+
+Each invocation loads fresh vocabulary. The menu and direct drill share the same initialization path. A drill prepares at most ten exercises per generation batch, carries duplicate checks across batches, and offers the available questions if a batch finishes short. Percentage limits apply within each prepared batch. The command owns its question queue in memory, shares the benchmark busy guard, and cancels pending network or analyzer work when the user dismisses the preparation dialog. Pi input and selection dialogs handle the typed answer and manual advance. The summary counts submissions.
 
 ## Configuration
 

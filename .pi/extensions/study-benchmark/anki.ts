@@ -3,10 +3,10 @@ import type { AnkiEntry } from "./vocabulary.ts";
 const query = 'deck:"Core 2000" is:review -is:learn -is:suspended';
 type Card = { cardId: number; interval: number; fields: Record<string, {value: string}> };
 
-async function anki<T>(action: string, params: object): Promise<T> {
+async function anki<T>(action: string, params: object, signal?: AbortSignal): Promise<T> {
   const response = await fetch("http://127.0.0.1:8765", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action, version: 6, params }), signal: AbortSignal.timeout(10_000),
+    body: JSON.stringify({ action, version: 6, params }), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
   }).catch(() => { throw new Error("AnkiConnect is unreachable. Open Anki and check the add-on."); });
   if (!response.ok) throw new Error("AnkiConnect HTTP " + response.status);
   const data = await response.json() as { result: T; error: string | null };
@@ -14,15 +14,15 @@ async function anki<T>(action: string, params: object): Promise<T> {
   return data.result;
 }
 
-export async function loadAnkiVocabulary() {
-  const ids = await anki<number[]>("findCards", { query });
+export async function loadAnkiVocabulary(signal?: AbortSignal) {
+  const ids = await anki<number[]>("findCards", { query }, signal);
   if (!Array.isArray(ids) || !ids.length || !ids.every(Number.isSafeInteger)) {
     throw new Error("Core 2000 returned no eligible cards or returned invalid card IDs.");
   }
   const entries: AnkiEntry[] = [];
   for (let i = 0; i < ids.length; i += 200) {
     const chunk = ids.slice(i, i + 200);
-    const cards = await anki<Card[]>("cardsInfo", { cards: chunk });
+    const cards = await anki<Card[]>("cardsInfo", { cards: chunk }, signal);
     if (!Array.isArray(cards) || new Set(cards.map(card => card.cardId)).size !== chunk.length
         || !cards.every(card => chunk.includes(card.cardId))) {
       throw new Error("AnkiConnect returned an incomplete card batch.");

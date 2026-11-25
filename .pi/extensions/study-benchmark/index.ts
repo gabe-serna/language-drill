@@ -2,21 +2,28 @@ import { spawn } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
 import { buildVocabularyGate, generateTrial, translateBatch, validateBatch, type Inference, type Token } from "./generation.ts";
 import { indexKnownExamples, mergeVocabulary, readFoundationalVocabulary, selectPracticeVocabulary } from "./vocabulary.ts";
 import { loadAnkiVocabulary } from "./anki.ts";
 import { translationCases, validatorCases } from "./validator-cases.ts";
 
+import { studyCommand, studyCompletions, studyGrammar, runQuestions } from "./session.ts";
+
+function deadline(ms: number, signal?: AbortSignal) {
+  const timeout = AbortSignal.timeout(ms);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const analyzer = fileURLToPath(new URL("./analyze.py", import.meta.url));
 const foundationalPath = join(root, "data", "foundational-vocabulary.json");
-function analyze(lines: string[]): Promise<Token[][]> {
+function analyze(lines: string[], signal?: AbortSignal): Promise<Token[][]> {
   return new Promise((resolve, reject) => {
     const python = join(root, ".venv", "Scripts", "python.exe");
     const proc = spawn(python, [analyzer], {
-      windowsHide: true, signal: AbortSignal.timeout(10_000), stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true, signal: deadline(10_000, signal), stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";
     let stderr = "";
@@ -66,8 +73,112 @@ function formatDebug(traces: InferenceTrace[]) {
   ].join("\n"))).join("\n\n");
 }
 
+function inference(ctx: ExtensionCommandContext, signal?: AbortSignal, traces?: InferenceTrace[], label = () => "study"): Inference {
+  return async ({ systemPrompt, data, maxTokens }) => {
+    const model = ctx.model;
+    if (!model) throw new Error("Pi no longer has a selected model.");
+    const userMessage = JSON.stringify(data);
+    const trace: InferenceTrace | undefined = traces ? { label: label(), model: model.id, systemPrompt, userMessage, maxTokens } : undefined;
+    if (trace) traces?.push(trace);
+    const entries = ctx.sessionManager.getEntries().length;
+    const reply = await ctx.modelRegistry.streamSimple(model, {
+      systemPrompt,
+      messages: [{ role: "user", timestamp: Date.now(), content: userMessage }],
+    }, { signal: deadline(45_000, signal), maxTokens }).result().catch(error => {
+      if (trace) trace.error = error instanceof Error ? error.message : String(error);
+      throw error;
+    });
+    const text = reply.content.filter(block => block.type === "text").map(block => block.text).join("");
+    if (trace) Object.assign(trace, { text, stop: reply.stopReason, error: reply.errorMessage });
+    signal?.throwIfAborted();
+    if (entries !== ctx.sessionManager.getEntries().length) {
+      throw new Error("Pi session entries changed during an isolated model request.");
+    }
+    return { text, stop: reply.stopReason };
+  };
+}
+
 export default function (pi: ExtensionAPI) {
   let running = false;
+  pi.registerCommand("study", {
+    description: "Open the study menu or start drilling [--q <count>]",
+    getArgumentCompletions: studyCompletions,
+    async handler(args, ctx) {
+      if (realpathSync(ctx.cwd).toLowerCase() !== realpathSync(root).toLowerCase()) return;
+      if (running || !ctx.hasUI || !ctx.isIdle()) {
+        ctx.ui.notify("Study needs an idle interactive Pi session.", "warning");
+        return;
+      }
+      running = true;
+      const controller = new AbortController();
+      const signal = controller.signal;
+      // Keep Escape available while external services run. Close the dialog before showing the next screen.
+      async function prepare<T>(title: string, work: () => Promise<T>) {
+        const dialog = new AbortController();
+        const closed = ctx.ui.select(title, ["Cancel"], { signal: dialog.signal }).then(() => {
+          if (!dialog.signal.aborted) controller.abort();
+        });
+        try {
+          const result = await work();
+          signal.throwIfAborted();
+          return result;
+        } finally {
+          dialog.abort();
+          await closed;
+        }
+      }
+      try {
+        let count = studyCommand(args);
+        const { entries, menu } = await prepare("Loading study vocabulary", async () => {
+          const [anki, foundational] = await Promise.all([loadAnkiVocabulary(signal), readFoundationalVocabulary(foundationalPath)]);
+          const entries = mergeVocabulary(anki.entries, foundational);
+          const known = new Set(entries.map(item => item.headword)).size;
+          return { entries, menu: `Study | ${anki.count} eligible cards | ${foundational.length} foundational entries | ${known} known headwords | Grammar: ${studyGrammar.join(", ")}` };
+        });
+        if (count === undefined) {
+          const choice = await ctx.ui.select(menu, ["/study drilling --q 10", "Exit"]);
+          if (!choice || choice === "Exit") return;
+          count = 10;
+        }
+        const requested = count;
+        const questions = await prepare("Preparing exercises (Esc to exit)", async () => {
+          const tokenize = (lines: string[]) => analyze(lines, signal);
+          const gate = await buildVocabularyGate(new Set(entries.map(item => item.headword)), tokenize);
+          const examples = await indexKnownExamples(entries, gate, tokenize);
+          const expansionPolicy = JSON.parse(readFileSync(join(root, "data", "vocabulary-expansion.json"), "utf8"));
+          const accepted: Awaited<ReturnType<typeof generateTrial>>["accepted"] = [];
+          const seed = Date.now();
+          while (accepted.length < requested) {
+            signal.throwIfAborted();
+            const size = Math.min(10, requested - accepted.length);
+            const sample = selectPracticeVocabulary(entries, seed + accepted.length, examples);
+            const result = await generateTrial({ ...sample, size, previous: accepted, gate, analyze: tokenize,
+              expansionPolicy, infer: inference(ctx, signal), onCall(stage, attempt) {
+                signal.throwIfAborted();
+                ctx.ui.setStatus("study", `Prepared ${accepted.length}/${requested} | ${stage} | attempt ${attempt}/3`);
+              } });
+            accepted.push(...result.accepted);
+            if (result.accepted.length < size) break;
+          }
+          return accepted;
+        });
+        ctx.ui.setStatus("study", undefined);
+        if (questions.length < requested) ctx.ui.notify(`Prepared ${questions.length} of ${requested} requested exercises within the retry limit.`, "warning");
+        if (!questions.length) return;
+        const result = await runQuestions(questions, {
+          answer: title => ctx.ui.input(title, "Type Japanese (Esc to exit)"),
+          reveal: async reference => await ctx.ui.select("Reference Japanese\n" + reference, ["Continue", "Exit"]) === "Continue",
+        });
+        ctx.ui.notify(`${result.completed ? "Study complete" : "Study ended"} | Submitted ${result.submitted}/${questions.length}`, "info");
+      } catch (error) {
+        ctx.ui.notify(signal.aborted ? "Study cancelled." : String(error), signal.aborted ? "info" : "error");
+      } finally {
+        controller.abort();
+        ctx.ui.setStatus("study", undefined);
+        running = false;
+      }
+    },
+  });
   pi.registerCommand("study-benchmark", {
     description: "Run three generation trials or a focused test, with optional --debug",
     async handler(args, ctx) {
@@ -94,27 +205,7 @@ export default function (pi: ExtensionAPI) {
       let label = mode || "benchmark";
       const show = (title: string) => ctx.ui.editor(title + " (Esc to close)", report.join("\n") + formatDebug(traces));
       const diagnostic = debug ? (message: string) => { (traces[traces.length - 1].diagnostics ??= []).push(message); } : undefined;
-      const infer: Inference = async ({ systemPrompt, data, maxTokens }) => {
-        const model = ctx.model;
-        if (!model) throw new Error("Pi no longer has a selected model.");
-        const userMessage = JSON.stringify(data);
-        const trace: InferenceTrace | undefined = debug ? { label, model: model.id, systemPrompt, userMessage, maxTokens } : undefined;
-        if (trace) traces.push(trace);
-        const entries = ctx.sessionManager.getEntries().length;
-        const reply = await ctx.modelRegistry.streamSimple(model, {
-          systemPrompt,
-          messages: [{ role: "user", timestamp: Date.now(), content: userMessage }],
-        }, { signal: AbortSignal.timeout(45_000), maxTokens }).result().catch(error => {
-          if (trace) trace.error = error instanceof Error ? error.message : String(error);
-          throw error;
-        });
-        const text = reply.content.filter(block => block.type === "text").map(block => block.text).join("");
-        if (trace) Object.assign(trace, { text, stop: reply.stopReason, error: reply.errorMessage });
-        if (entries !== ctx.sessionManager.getEntries().length) {
-          throw new Error("Pi session entries changed during an isolated model request.");
-        }
-        return { text, stop: reply.stopReason };
-      };
+      const infer = inference(ctx, undefined, debug ? traces : undefined, () => label);
       try {
         const benchmarkStarted = Date.now();
         const foundational = await readFoundationalVocabulary(foundationalPath);
