@@ -7,7 +7,8 @@ The implemented application is the project-local Pi study and benchmark extensio
 | Component | Responsibility |
 | --- | --- |
 | `index.ts` | Registers the study and benchmark commands, launches the local Python analyzer, calls Pi's model registry, and renders the report. The command requires an idle interactive Pi session at the project root. |
-| `session.ts` | Parses study arguments, exposes the supported grammar, and drives the answer, reference, and advance sequence using an injected view. |
+| `session.ts` | Parses study arguments, exposes the supported grammar, and tracks drafts, evaluated attempts, and outcomes, and drives progression using an injected view. |
+| `grading.ts` | Builds isolated grading and reference explanation requests and validates structured model replies. |
 | `anki.ts` | Reads eligible Core 2000 cards via AnkiConnect v6 at `127.0.0.1:8765`. The query selects review cards outside learning and suspension. A review interval of at least 21 days marks a card as mature for sampling. |
 | `vocabulary.ts` | Merges known vocabulary by headword, reading, and meaning while preserving source provenance. Selects seeded practice samples and examples with known supporting vocabulary. Provides validated, atomic foundational vocabulary edits for explicit user actions. |
 | `analyze.py` | Returns Sudachi Mode C tokens with surface, dictionary form, part of speech, out-of-vocabulary status, and character offsets. |
@@ -28,7 +29,7 @@ Each inference stage uses the selected Pi model with a fresh context. The benchm
 
 ## Interactive study
 
-Each invocation loads fresh vocabulary. The menu and direct drill share the same initialization path. A drill prepares at most ten exercises per generation batch, carries duplicate checks across batches, and offers the available questions if a batch finishes short. Percentage limits apply within each prepared batch. The command owns its question queue in memory, shares the benchmark busy guard, and cancels pending network or analyzer work when the user dismisses the preparation dialog. Pi input and selection dialogs handle the typed answer and manual advance. The summary counts submissions.
+Each invocation loads fresh vocabulary. The menu and direct drill share the same initialization path. A drill prepares at most ten exercises per generation batch, carries duplicate checks across batches, and offers the available questions if a batch finishes short. Percentage limits apply within each prepared batch. The command owns its question queue in memory, shares the benchmark busy guard, and cancels pending network or analyzer work when the user dismisses the preparation dialog. Pi editor and selection dialogs handle draft editing, feedback, give-up, and manual advance. Each grading call receives only the current English prompt, reference, and submitted answer. Failure or cancellation preserves the draft and leaves the three-attempt budget intact. Interim feedback is in English to keep the Japanese reference hidden. A correct grade, exhausted attempts, or give-up unlocks the reference and starts a separate, cancellable explanation call. The completion screen shows the submitted answer, accented reference and feedback. It starts one breakdown request per question and caches the result for the E toggle. Study debug traces stay in memory until exit. The summary reports correct questions and evaluated attempts.
 
 ## Configuration
 

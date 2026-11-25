@@ -1,4 +1,6 @@
-﻿// Phase 1 exposes the single grammar rule supported by the generator.
+import type { Grade, Question } from "./grading.ts";
+
+// Phase 1 exposes the single grammar rule supported by the generator.
 export const studyGrammar = ["polite-past"] as const;
 
 export function studyCommand(args: string): number | undefined {
@@ -17,22 +19,48 @@ export function studyCompletions(prefix: string) {
   return next ? [{ value: next, label: next }] : null;
 }
 
-type Question = { english: string; referenceJa: string };
+type Attempt = { answer: string; grade: Grade };
+type Outcome = "correct" | "exhausted" | "gave_up";
 type StudyView = {
-  answer(prompt: string): Promise<string | undefined>;
-  reveal(reference: string): Promise<boolean>;
+  answer(state: { prompt: string; draft: string; attempts: Attempt[]; gradingFailed: boolean; failure: string }): Promise<
+    { action: "submit"; answer: string } | { action: "give_up" | "exit" }
+  >;
+  grade(question: Question, answer: string): Promise<Grade>;
+  reveal(question: Question, outcome: Outcome, lastGrade?: Grade, submittedAnswer?: string): Promise<boolean>;
 };
 
 export async function runQuestions(questions: Question[], view: StudyView) {
-  let submitted = 0;
-  for (const question of questions) {
-    let answer;
-    do {
-      answer = await view.answer(`Question ${submitted + 1}/${questions.length}\n${question.english}`);
-      if (answer === undefined) return { submitted, completed: false };
-    } while (!answer.trim());
-    submitted++;
-    if (!await view.reveal(question.referenceJa)) return { submitted, completed: false };
+  const records: { attempts: Attempt[]; outcome?: Outcome }[] = [];
+  for (const [index, question] of questions.entries()) {
+    const record: typeof records[number] = { attempts: [] };
+    records.push(record);
+    let draft = "";
+    let failure = "";
+    const prompt = `Question ${index + 1}/${questions.length}\n${question.english}`;
+    while (!record.outcome) {
+      const input = await view.answer({ prompt, draft, attempts: record.attempts, gradingFailed: !!failure, failure });
+      if (input.action === "exit") return { records, completed: false };
+      if (input.action === "give_up") {
+        record.outcome = "gave_up";
+        break;
+      }
+      if (input.action !== "submit") continue;
+      draft = input.answer;
+      if (!draft.trim()) continue;
+      let grade: Grade;
+      try {
+        grade = await view.grade(question, draft.trim());
+      } catch (error) {
+        failure = error instanceof Error ? error.message : "Grading request failed.";
+        continue;
+      }
+      failure = "";
+      record.attempts.push({ answer: draft, grade });
+      if (grade.verdict === "correct") record.outcome = "correct";
+      else if (record.attempts.length === 3) record.outcome = "exhausted";
+    }
+    if (!await view.reveal(question, record.outcome, record.attempts.at(-1)?.grade, record.attempts.at(-1)?.answer))
+      return { records, completed: false };
   }
-  return { submitted, completed: true };
+  return { records, completed: true };
 }

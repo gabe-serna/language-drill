@@ -1,3 +1,5 @@
+import { wrapTextWithAnsi, matchesKey } from "@earendil-works/pi-tui";
+import { gradeAnswer, explainAnswer, type Grade } from "./grading.ts";
 import { spawn } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -81,16 +83,18 @@ function inference(ctx: ExtensionCommandContext, signal?: AbortSignal, traces?: 
     const trace: InferenceTrace | undefined = traces ? { label: label(), model: model.id, systemPrompt, userMessage, maxTokens } : undefined;
     if (trace) traces?.push(trace);
     const entries = ctx.sessionManager.getEntries().length;
+    const requestSignal = deadline(45_000, signal);
     const reply = await ctx.modelRegistry.streamSimple(model, {
       systemPrompt,
       messages: [{ role: "user", timestamp: Date.now(), content: userMessage }],
-    }, { signal: deadline(45_000, signal), maxTokens }).result().catch(error => {
+    }, { signal: requestSignal, maxTokens }).result().catch(error => {
       if (trace) trace.error = error instanceof Error ? error.message : String(error);
+      requestSignal.throwIfAborted();
       throw error;
     });
     const text = reply.content.filter(block => block.type === "text").map(block => block.text).join("");
     if (trace) Object.assign(trace, { text, stop: reply.stopReason, error: reply.errorMessage });
-    signal?.throwIfAborted();
+    requestSignal.throwIfAborted();
     if (entries !== ctx.sessionManager.getEntries().length) {
       throw new Error("Pi session entries changed during an isolated model request.");
     }
@@ -113,22 +117,24 @@ export default function (pi: ExtensionAPI) {
       const controller = new AbortController();
       const signal = controller.signal;
       // Keep Escape available while external services run. Close the dialog before showing the next screen.
-      async function prepare<T>(title: string, work: () => Promise<T>) {
+      async function prepare<T>(title: string, work: () => Promise<T>, cancellation = controller) {
         const dialog = new AbortController();
         const closed = ctx.ui.select(title, ["Cancel"], { signal: dialog.signal }).then(() => {
-          if (!dialog.signal.aborted) controller.abort();
+          if (!dialog.signal.aborted) cancellation.abort();
         });
         try {
           const result = await work();
-          signal.throwIfAborted();
+          cancellation.signal.throwIfAborted();
           return result;
         } finally {
           dialog.abort();
           await closed;
         }
       }
+      const tokens = args.trim().split(/\s+/);
+      const traces: InferenceTrace[] | undefined = tokens.includes("--debug") ? [] : undefined;
       try {
-        let count = studyCommand(args);
+        let count = studyCommand(tokens.filter(token => token !== "--debug").join(" "));
         const { entries, menu } = await prepare("Loading study vocabulary", async () => {
           const [anki, foundational] = await Promise.all([loadAnkiVocabulary(signal), readFoundationalVocabulary(foundationalPath)]);
           const entries = mergeVocabulary(anki.entries, foundational);
@@ -165,17 +171,83 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.setStatus("study", undefined);
         if (questions.length < requested) ctx.ui.notify(`Prepared ${questions.length} of ${requested} requested exercises within the retry limit.`, "warning");
         if (!questions.length) return;
+        const feedback = (grade?: Grade) => grade
+          ? [({ correct: "Correct", partially_correct: "Partially correct", incorrect: "Incorrect" })[grade.verdict],
+            grade.feedback, ...grade.errors.map(error => "- " + error)].join("\n")
+          : "";
         const result = await runQuestions(questions, {
-          answer: title => ctx.ui.input(title, "Type Japanese (Esc to exit)"),
-          reveal: async reference => await ctx.ui.select("Reference Japanese\n" + reference, ["Continue", "Exit"]) === "Continue",
+          async answer({ prompt, draft, attempts, failure }) {
+            const remaining = 3 - attempts.length;
+            const status = failure ? `${failure} Your draft is ready to retry.` : "";
+            const title = [prompt, `${remaining} evaluated attempts remaining`, feedback(attempts.at(-1)?.grade), status]
+              .filter(Boolean).join("\n");
+            const edit = draft ? "Edit and submit" : "Enter answer";
+            const choice = await ctx.ui.select(title, [edit, "Give up", "Exit"]);
+            if (choice === "Give up") return { action: "give_up" };
+            if (choice !== edit) return { action: "exit" };
+            const answer = await ctx.ui.editor(prompt, draft);
+            return answer === undefined ? { action: "exit" } : { action: "submit", answer };
+          },
+          async grade(question, answer) {
+            const grading = new AbortController();
+            try {
+              return await prepare("Grading answer (Esc to cancel)", () =>
+                gradeAnswer(inference(ctx, grading.signal, traces, () => "grading"), question, answer), grading);
+            } catch (error) {
+              const message = grading.signal.aborted ? "Grading cancelled." :
+                error instanceof Error && error.name === "TimeoutError" ? "Grading timed out." :
+                error instanceof Error ? error.message : "Grading inference failed.";
+              if (traces?.length) traces[traces.length - 1].diagnostics = [message];
+              throw new Error(message);
+            }
+          },
+          async reveal(question, outcome, lastGrade, answer) {
+            const explaining = new AbortController();
+            try {
+              return await ctx.ui.custom<boolean>((tui, theme, keys, done) => {
+                let expanded = false;
+                let points = ["Preparing breakdown…"];
+                let selected = 0;
+                // Start once per completed question. Visibility changes only affect rendering.
+                void explainAnswer(inference(ctx, explaining.signal, traces, () => "breakdown"), question)
+                  .then(result => { points = result; }, () => { points = ["Breakdown unavailable."]; })
+                  .finally(() => { if (!explaining.signal.aborted) tui.requestRender(); });
+                return {
+                  invalidate() {},
+                  render(width) {
+                    const verdict = lastGrade?.verdict;
+                    const label = verdict === "correct" ? "Correct" : verdict === "partially_correct" ? "Partially correct" : verdict ? "Incorrect" : "Gave up";
+                    const color = verdict === "correct" ? "success" : verdict === "partially_correct" ? "warning" : verdict ? "error" : "muted";
+                    const lines = [theme.fg(color, label), ...(answer ? [visibleText(answer)] : []), "",
+                      theme.fg("muted", "Reference"), theme.fg("accent", visibleText(question.referenceJa)), "",
+                      ...(lastGrade ? [lastGrade.feedback, ...lastGrade.errors] : []),
+                      ...(outcome === "gave_up" && verdict ? [theme.fg("muted", "Gave up")] : []),
+                      "", theme.fg("muted", expanded ? "[E] Hide breakdown" : "[E] Show breakdown"),
+                      ...(expanded ? points : []), "", ...["Continue", "Exit"].map((name, i) => (selected === i ? "→ " : "  ") + name)];
+                    return lines.flatMap(line => wrapTextWithAnsi(line, width));
+                  },
+                  handleInput(data) {
+                    if (keys.matches(data, "tui.select.cancel")) return done(false);
+                    if (keys.matches(data, "tui.select.confirm")) return done(selected === 0);
+                    if (matchesKey(data, "e") || matchesKey(data, "shift+e") || data === "E") expanded = !expanded;
+                    else if (keys.matches(data, "tui.select.up") || keys.matches(data, "tui.select.down")) selected = 1 - selected;
+                    tui.requestRender();
+                  },
+                };
+              });
+            } finally { explaining.abort(); }
+          },
         });
-        ctx.ui.notify(`${result.completed ? "Study complete" : "Study ended"} | Submitted ${result.submitted}/${questions.length}`, "info");
+        const evaluated = result.records.reduce((total, record) => total + record.attempts.length, 0);
+        const correct = result.records.filter(record => record.outcome === "correct").length;
+        ctx.ui.notify(`${result.completed ? "Study complete" : "Study ended"} | Correct ${correct}/${questions.length} | Evaluated attempts ${evaluated}`, "info");
       } catch (error) {
         ctx.ui.notify(signal.aborted ? "Study cancelled." : String(error), signal.aborted ? "info" : "error");
       } finally {
         controller.abort();
         ctx.ui.setStatus("study", undefined);
-        running = false;
+        try { if (traces?.length) await ctx.ui.editor("Study debug (Esc to close)", formatDebug(traces)); }
+        finally { running = false; }
       }
     },
   });
