@@ -1,0 +1,20 @@
+# Local dependencies and Python caches
+/.venv/
+node_modules/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local environment and Pi state
+.env
+.env.*
+!.env.example
+/.pi/sessions/
+/.pi/auth.json
+
+# Benchmark traces may contain vocabulary and model output
+/debug/
+
+# OS metadata
+Thumbs.db
+.DS_Store

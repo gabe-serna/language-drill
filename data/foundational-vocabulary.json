@@ -1,0 +1,347 @@
+[
+  {
+    "headword": "私",
+    "reading": "わたし",
+    "meaning": "I; me"
+  },
+  {
+    "headword": "これ",
+    "reading": "これ",
+    "meaning": "this (thing)"
+  },
+  {
+    "headword": "それ",
+    "reading": "それ",
+    "meaning": "that (thing)"
+  },
+  {
+    "headword": "ここ",
+    "reading": "ここ",
+    "meaning": "here"
+  },
+  {
+    "headword": "そこ",
+    "reading": "そこ",
+    "meaning": "there"
+  },
+  {
+    "headword": "この",
+    "reading": "この",
+    "meaning": "this (before a noun)"
+  },
+  {
+    "headword": "ドア",
+    "reading": "ドア",
+    "meaning": "door"
+  },
+  {
+    "headword": "かばん",
+    "reading": "かばん",
+    "meaning": "bag"
+  },
+  {
+    "headword": "鍵",
+    "reading": "かぎ",
+    "meaning": "key"
+  },
+  {
+    "headword": "テーブル",
+    "reading": "テーブル",
+    "meaning": "table"
+  },
+  {
+    "headword": "ベッド",
+    "reading": "ベッド",
+    "meaning": "bed"
+  },
+  {
+    "headword": "スマホ",
+    "reading": "スマホ",
+    "meaning": "smartphone"
+  },
+  {
+    "headword": "テレビ",
+    "reading": "テレビ",
+    "meaning": "television"
+  },
+  {
+    "headword": "時計",
+    "reading": "とけい",
+    "meaning": "clock; watch"
+  },
+  {
+    "headword": "財布",
+    "reading": "さいふ",
+    "meaning": "wallet"
+  },
+  {
+    "headword": "靴",
+    "reading": "くつ",
+    "meaning": "shoes"
+  },
+  {
+    "headword": "服",
+    "reading": "ふく",
+    "meaning": "clothes"
+  },
+  {
+    "headword": "コップ",
+    "reading": "コップ",
+    "meaning": "cup; drinking glass"
+  },
+  {
+    "headword": "シャワー",
+    "reading": "シャワー",
+    "meaning": "shower"
+  },
+  {
+    "headword": "ある",
+    "reading": "ある",
+    "meaning": "exist (inanimate); have"
+  },
+  {
+    "headword": "いる",
+    "reading": "いる",
+    "meaning": "exist (animate); be present"
+  },
+  {
+    "headword": "する",
+    "reading": "する",
+    "meaning": "do"
+  },
+  {
+    "headword": "できる",
+    "reading": "できる",
+    "meaning": "can do; be able to"
+  },
+  {
+    "headword": "僕",
+    "reading": "ぼく",
+    "meaning": "I; me (casual masculine)"
+  },
+  {
+    "headword": "あなた",
+    "reading": "あなた",
+    "meaning": "you"
+  },
+  {
+    "headword": "あれ",
+    "reading": "あれ",
+    "meaning": "that thing over there"
+  },
+  {
+    "headword": "その",
+    "reading": "その",
+    "meaning": "that (before a noun)"
+  },
+  {
+    "headword": "あの",
+    "reading": "あの",
+    "meaning": "that over there (before a noun)"
+  },
+  {
+    "headword": "あそこ",
+    "reading": "あそこ",
+    "meaning": "over there"
+  },
+  {
+    "headword": "誰",
+    "reading": "だれ",
+    "meaning": "who"
+  },
+  {
+    "headword": "何",
+    "reading": "なに",
+    "meaning": "what"
+  },
+  {
+    "headword": "何",
+    "reading": "なん",
+    "meaning": "what"
+  },
+  {
+    "headword": "どこ",
+    "reading": "どこ",
+    "meaning": "where"
+  },
+  {
+    "headword": "いつ",
+    "reading": "いつ",
+    "meaning": "when"
+  },
+  {
+    "headword": "どうして",
+    "reading": "どうして",
+    "meaning": "why"
+  },
+  {
+    "headword": "どう",
+    "reading": "どう",
+    "meaning": "how"
+  },
+  {
+    "headword": "どれ",
+    "reading": "どれ",
+    "meaning": "which one"
+  },
+  {
+    "headword": "どんな",
+    "reading": "どんな",
+    "meaning": "what kind of"
+  },
+  {
+    "headword": "とても",
+    "reading": "とても",
+    "meaning": "very"
+  },
+  {
+    "headword": "もう",
+    "reading": "もう",
+    "meaning": "already"
+  },
+  {
+    "headword": "まだ",
+    "reading": "まだ",
+    "meaning": "still; not yet"
+  },
+  {
+    "headword": "また",
+    "reading": "また",
+    "meaning": "again"
+  },
+  {
+    "headword": "一緒に",
+    "reading": "いっしょに",
+    "meaning": "together"
+  },
+  {
+    "headword": "一人で",
+    "reading": "ひとりで",
+    "meaning": "alone; by oneself"
+  },
+  {
+    "headword": "いつも",
+    "reading": "いつも",
+    "meaning": "always"
+  },
+  {
+    "headword": "すぐ",
+    "reading": "すぐ",
+    "meaning": "immediately; right away"
+  },
+  {
+    "headword": "よく",
+    "reading": "よく",
+    "meaning": "often"
+  },
+  {
+    "headword": "ゆっくり",
+    "reading": "ゆっくり",
+    "meaning": "slowly; without rushing"
+  },
+  {
+    "headword": "多分",
+    "reading": "たぶん",
+    "meaning": "probably"
+  },
+  {
+    "headword": "何か",
+    "reading": "なにか",
+    "meaning": "something"
+  },
+  {
+    "headword": "物",
+    "reading": "もの",
+    "meaning": "thing; object"
+  },
+  {
+    "headword": "映画",
+    "reading": "えいが",
+    "meaning": "movie"
+  },
+  {
+    "headword": "音楽",
+    "reading": "おんがく",
+    "meaning": "music"
+  },
+  {
+    "headword": "ゲーム",
+    "reading": "ゲーム",
+    "meaning": "game"
+  },
+  {
+    "headword": "買い物",
+    "reading": "かいもの",
+    "meaning": "shopping"
+  },
+  {
+    "headword": "散歩",
+    "reading": "さんぽ",
+    "meaning": "walk; stroll"
+  },
+  {
+    "headword": "旅行",
+    "reading": "りょこう",
+    "meaning": "trip; travel"
+  },
+  {
+    "headword": "公園",
+    "reading": "こうえん",
+    "meaning": "park"
+  },
+  {
+    "headword": "コンビニ",
+    "reading": "コンビニ",
+    "meaning": "convenience store"
+  },
+  {
+    "headword": "レストラン",
+    "reading": "レストラン",
+    "meaning": "restaurant"
+  },
+  {
+    "headword": "カフェ",
+    "reading": "カフェ",
+    "meaning": "cafe"
+  },
+  {
+    "headword": "トイレ",
+    "reading": "トイレ",
+    "meaning": "toilet; restroom"
+  },
+  {
+    "headword": "部屋",
+    "reading": "へや",
+    "meaning": "room"
+  },
+  {
+    "headword": "台所",
+    "reading": "だいどころ",
+    "meaning": "kitchen"
+  },
+  {
+    "headword": "大丈夫",
+    "reading": "だいじょうぶ",
+    "meaning": "okay; all right; fine"
+  },
+  {
+    "headword": "もちろん",
+    "reading": "もちろん",
+    "meaning": "of course"
+  },
+  {
+    "headword": "すみません",
+    "reading": "すみません",
+    "meaning": "excuse me; sorry"
+  },
+  {
+    "headword": "ありがとう",
+    "reading": "ありがとう",
+    "meaning": "thank you"
+  },
+  {
+    "headword": "そうです",
+    "reading": "そうです",
+    "meaning": "that's right"
+  }
+]
