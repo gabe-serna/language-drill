@@ -9,18 +9,18 @@ import { sessionAudio } from "../../../src/core/audio.ts";
 import { playWave } from "../../../src/adapters/windows-playback.ts";
 import { prepareQuestions } from "../../../src/core/prepare.ts";
 import { studyCommand, studyCompletions } from "./commands.ts";
-import { readFoundationalVocabulary } from "../../../src/adapters/foundational.ts";
+import { addFoundationalEntry, readFoundationalVocabulary } from "../../../src/adapters/foundational.ts";
 import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import { buildVocabularyGate, finalizeExpansion, generateTrial, translateBatch, validateBatch } from "../../../src/core/generation.ts";
+import { formDistribution, buildVocabularyGate, finalizeExpansion, generateTrial, translateBatch, validateBatch } from "../../../src/core/generation.ts";
 import { indexKnownExamples, mergeVocabulary, selectPracticeVocabulary } from "../../../src/core/vocabulary.ts";
 import { loadAnkiVocabulary } from "../../../src/adapters/anki.ts";
 import { translationCases, validatorCases } from "./validator-cases.ts";
 
-import { runQuestions } from "../../../src/core/session.ts";
+import { runQuestions, summary } from "../../../src/core/session.ts";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const foundationalPath = join(root, "data", "foundational-vocabulary.json");
@@ -113,16 +113,52 @@ export default function (pi: ExtensionAPI) {
           autoPlay = settings.autoPlay;
         } catch { ctx.ui.notify("Reference audio unavailable. Check data/voicevox.json.", "warning"); }
         const result = await runQuestions(questions, {
+          known: new Set(entries.map(entry => entry.headword)),
+          analyze: lines => analyze(lines, signal),
+          confirm: entry => ctx.ui.custom<"yes" | "no" | "skip">((_tui, theme, keys, done) => ({
+            invalidate() {},
+            render: width => [theme.fg("accent", "Unconfirmed vocabulary"), "",
+              visibleText(entry.headword + "（" + entry.reading + "）— " + entry.meaning), "",
+              "Did you already know this word?", "[Y] Yes    [N] No    [S] Skip"].flatMap(line => wrapTextWithAnsi(line, width)),
+            handleInput(data) {
+              if (data.toLowerCase() === "y") done("yes");
+              else if (data.toLowerCase() === "n") done("no");
+              else if (data.toLowerCase() === "s" || keys.matches(data, "tui.select.cancel")) done("skip");
+            },
+          })),
+          async save(entry) {
+            await addFoundationalEntry(foundationalPath, entry);
+            entries.push(...mergeVocabulary([], [entry]));
+          },
+          error: message => ctx.ui.notify(message, "warning"),
           begin: question => audio?.preload(question.referenceJa),
-          async answer({ prompt, draft, attempts, failure }) {
-            const remaining = 3 - attempts.length;
-            const status = failure ? `${failure} Your draft is ready to retry.` : "";
-            const title = [prompt, `${remaining} evaluated attempts remaining`, feedback(attempts.at(-1)?.grade), status]
-              .filter(Boolean).join("\n");
-            const edit = draft ? "Edit and submit" : "Enter answer";
-            const choice = await ctx.ui.select(title, [edit, "Give up", "Exit"]);
-            if (choice === "Give up") return { action: "give_up" };
-            if (choice !== edit) return { action: "exit" };
+          async answer({ prompt, draft, attempts, failure, hint, remaining }) {
+            const [title, ...english] = prompt.split("\n");
+            const choices = [draft ? "Edit and submit" : "Enter Answer", hint ? "Hide Hint" : "Show Hint", "Give Up", "Exit"];
+            const choice = await ctx.ui.custom<number>((tui, theme, keys, done) => {
+              let selected = 0;
+              return {
+                invalidate() {},
+                render(width) {
+                  const lines = [theme.fg("accent", title.toUpperCase()), visibleText(english.join("\n")), "",
+                    ...(hint ? [theme.fg("accent", "Hint:"), visibleText(hint), ""] : []),
+                    theme.fg("muted", "─".repeat(Math.max(0, width))), theme.italic(theme.fg("muted", remaining + " attempts remaining")),
+                    feedback(attempts.at(-1)?.grade), failure ? failure + " Your draft is ready to retry." : "",
+                    ...choices.map((name, i) => selected === i ? theme.fg("accent", "→ " + name) : "  " + name)];
+                  return lines.flatMap(line => wrapTextWithAnsi(line, width));
+                },
+                handleInput(data) {
+                  if (keys.matches(data, "tui.select.cancel")) return done(3);
+                  if (keys.matches(data, "tui.select.confirm")) return done(selected);
+                  if (keys.matches(data, "tui.select.up")) selected = (selected + 3) % 4;
+                  if (keys.matches(data, "tui.select.down")) selected = (selected + 1) % 4;
+                  tui.requestRender();
+                },
+              };
+            });
+            if (choice === 1) return { action: "hint" };
+            if (choice === 2) return { action: "give_up" };
+            if (choice === 3) return { action: "exit" };
             const answer = await ctx.ui.editor(prompt, draft);
             return answer === undefined ? { action: "exit" } : { action: "submit", answer };
           },
@@ -144,8 +180,11 @@ export default function (pi: ExtensionAPI) {
             try {
               return await ctx.ui.custom<boolean>((tui, theme, keys, done) => {
                 let firstRender = true;
-                let audioFailed = false;
-                const replay = () => audio?.replay(question.referenceJa, () => { audioFailed = true; tui.requestRender(); });
+                let failedSpeed: boolean | undefined;
+                const replay = (slow = false) => {
+                  failedSpeed = undefined;
+                  audio?.replay(question.referenceJa, () => { failedSpeed = slow; tui.requestRender(); }, slow);
+                };
                 let expanded = false;
                 let points = ["Preparing breakdown…"];
                 let selected = 0;
@@ -162,11 +201,11 @@ export default function (pi: ExtensionAPI) {
                     const label = verdict === "correct" ? "Correct" : verdict === "partially_correct" ? "Partially correct" : verdict ? "Incorrect" : "Gave up";
                     const color = verdict === "correct" ? "success" : verdict === "partially_correct" ? "warning" : verdict ? "error" : "muted";
                     const lines = [theme.fg(color, label), ...(answer ? [visibleText(answer)] : []), "",
-                      theme.fg("muted", "Reference"), theme.fg("accent", visibleText(question.referenceJa)), "",
+                      theme.fg("muted", "Reference"), theme.fg("accent", visibleText(question.referenceJa)), theme.italic(theme.fg("muted", visibleText(question.english))), "",
                       ...(lastGrade ? [lastGrade.feedback, ...lastGrade.errors] : []),
                       ...(outcome === "gave_up" && verdict ? [theme.fg("muted", "Gave up")] : []),
                       "", theme.fg("muted", expanded ? "[E] Hide breakdown" : "[E] Show breakdown"),
-                      ...(audio ? [theme.fg("muted", audioFailed ? "[P] Replay reference audio (unavailable)" : "[P] Replay reference audio")] : []),
+                      ...(audio ? [theme.fg("muted", failedSpeed === false ? "[P] Replay Audio (unavailable)" : "[P] Replay Audio"), theme.fg("muted", "[L] Replay Audio (slow)" + (failedSpeed === true ? " (unavailable)" : ""))] : []),
                       ...(expanded ? points : []), "", ...["Continue", "Exit"].map((name, i) => (selected === i ? "→ " : "  ") + name)];
                     return lines.flatMap(line => wrapTextWithAnsi(line, width));
                   },
@@ -174,6 +213,7 @@ export default function (pi: ExtensionAPI) {
                     if (keys.matches(data, "tui.select.cancel")) return done(false);
                     if (keys.matches(data, "tui.select.confirm")) return done(selected === 0);
                     if (matchesKey(data, "e") || matchesKey(data, "shift+e") || data === "E") expanded = !expanded;
+                    else if (data.toLowerCase() === "l") replay(true);
                     else if (matchesKey(data, "p") || matchesKey(data, "shift+p") || data === "P") replay();
                     else if (keys.matches(data, "tui.select.up") || keys.matches(data, "tui.select.down")) selected = 1 - selected;
                     tui.requestRender();
@@ -183,10 +223,7 @@ export default function (pi: ExtensionAPI) {
             } finally { explaining.abort(); audio?.stop(); }
           },
         });
-        const evaluated = result.records.reduce((total, record) => total + record.attempts.length, 0);
-        const correct = result.records.filter(record => record.outcome === "correct").length;
-        const partial = result.records.filter(record => record.outcome === "partially_correct").length;
-        ctx.ui.notify(`${result.completed ? "Study complete" : "Study ended"} | Correct ${correct}/${questions.length} | Partially correct ${partial} | Evaluated attempts ${evaluated}`, "info");
+        await ctx.ui.select((result.completed ? "Study complete" : "Study ended") + "\n" + summary(result), ["Done"]);
       } catch (error) {
         ctx.ui.notify(signal.aborted ? "Study cancelled." : String(error), signal.aborted ? "info" : "error");
       } finally {
@@ -325,6 +362,7 @@ export default function (pi: ExtensionAPI) {
             for (const item of result.accepted) report.push(`  ${item.english}  |  ${item.referenceJa}`);
           }
           const final = finalizeExpansion(all, deferred, expansionPolicy.maxPercent, 10);
+          report.push("Grammatical forms and sentence types (surface estimates): " + JSON.stringify(formDistribution(final)));
           if (final.length === 10) fullTrials++;
           if (mode) {
             report.push(`Trial ${trial} final distribution: ` + tiers.map(tier =>

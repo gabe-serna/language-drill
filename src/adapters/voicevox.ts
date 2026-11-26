@@ -8,7 +8,7 @@ export function voicevox(settings: Settings, request = fetch): AudioProvider {
     || !(settings.speakerId === null || Number.isSafeInteger(settings.speakerId) && settings.speakerId >= 0)
     || !/^https?:$/.test(new URL(settings.apiAddress).protocol)) throw new Error("Invalid VOICEVOX settings.");
   let speaker = settings.speakerId;
-  return async (sentence: string, cancel: AbortSignal) => {
+  return async (sentence: string, cancel: AbortSignal, slow = false) => {
     if (typeof sentence !== "string" || !sentence.trim()) throw new Error("Expected reference text.");
     const signal = AbortSignal.any([cancel, AbortSignal.timeout(30000)]);
     async function call(path: string, params: Record<string, string>, init?: RequestInit) {
@@ -27,7 +27,7 @@ export function voicevox(settings: Settings, request = fetch): AudioProvider {
     const params = { speaker: String(speaker) };
     const query = await (await call("/audio_query", { ...params, text: sentence }, { method: "POST" })).json();
     if (!query || typeof query !== "object" || Array.isArray(query)) throw new Error("Invalid VOICEVOX audio query.");
-    query.speedScale = settings.speed;
+    query.speedScale = slow ? 0.5 : settings.speed;
     const response = await call("/synthesis", params, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(query) });
     const wav = new Uint8Array(await response.arrayBuffer());
     if (!isWave(wav)) throw new Error("Invalid VOICEVOX audio.");

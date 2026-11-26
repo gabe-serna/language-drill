@@ -139,9 +139,7 @@ export function selectPracticeVocabulary(entries: VocabularyEntry[], seed: numbe
     const compatible = knownVerbs.has(item.headword) || ((item.pos === "Noun" || item.pos === "Adjective")
       && words.some(word => knownVerbs.has(word)));
     if (!compatible) continue;
-    // Past endings provide a stronger starting point for this benchmark. This is a ranking signal.
-    const past = /(?:ました|ませんでした|った|いた|した|んだ|いだ)[。！？!?]*$/.test(example);
-    const score = 1 + Number(past) * 2 + Number(words.every(word => shown.has(word)));
+    const score = 1 + Number(words.every(word => shown.has(word)));
     scores.set(item.headword, Math.max(score, scores.get(item.headword) ?? 0));
   }
   const ranked = [...new Set(shuffledForms)].sort((a, b) => (scores.get(b) ?? 0) - (scores.get(a) ?? 0));

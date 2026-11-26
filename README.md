@@ -34,7 +34,7 @@ For grading diagnostics run `/study drilling --q 2 --debug`. On exit the debug e
 
 Drills mix easy, medium, and hard questions in a 50/30/20 split by default. Use `/study drilling --q 20 --difficulty hard` to practice one tier. Add `--recent` to favor recently reviewed vocabulary while keeping older words in the pool.
 
-Review the proposed grammar entries in [grammar.json](data/grammar.json). The existing polite-past pattern, core particles, and modifiers are enabled. The new proposals are disabled pending review. The file also controls the difficulty split and recency weighting.
+Review the proposed grammar entries in [grammar.json](data/grammar.json). Everyday predicates, polite past, polite requests, core particles and modifiers are enabled. Other proposed constructions can be reviewed individually. The file also controls the difficulty split and recency weighting.
 
 Run `/study-benchmark easy`, `medium`, `hard`, or `mixed` in Pi, with optional `--recent` and `--debug`. The bare benchmark runs the original polite-past checks. Check the requested and accepted counts, grammar coverage and rejection reasons, sampled vocabulary use, and representative pairs in the report.
 
@@ -57,3 +57,10 @@ node --test tests/*.test.ts
 Start VOICEVOX before the drill. Edit [voicevox.json](data/voicevox.json) before starting a session. Set `enabled` to enable audio, `apiAddress` to the engine URL, `speed` to a positive speaking rate (default 0.8), and `autoPlay` to control playback on reveal. A null `speakerId` selects Kurono Takehiro's normal style by name. Use a numeric style ID to override it.
 
 Run `/reload` and start a drill. Check that the question and retry screens stay silent. After a correct or partially correct answer, give-up, or exhausted attempts, listen for the Japanese reference and press P twice to restart it. Continue or exit mid-sentence and confirm the sound stops. Repeat with automatic playback off to check manual replay, and with VOICEVOX closed to check silent study.
+
+## Learning assistance checks
+
+1. Run `/study-benchmark mixed` and inspect the final distribution of forms and sentence types alongside the actual pairs. Counts are surface estimates and form categories can overlap.
+2. In `/study drilling --q 3`, show and hide a hint. Check particles and endings, the attempt count, and IME editing. Submit an alternative to the hinted structure. On reveal check the English beneath the reference and toggle E.
+3. With VOICEVOX running, alternate P and L rapidly, then continue during replay. Check normal and slow speed, single playback, and silent navigation with the engine stopped.
+4. On an expanded exercise, inspect the reading and gloss after reveal. Use N or S to dismiss it. Choose Y only for a word you want saved. Check the summary and restart to verify persistence. Give up on another question and exit early to check partial-session totals.

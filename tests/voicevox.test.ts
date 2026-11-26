@@ -50,7 +50,8 @@ test("leaving feedback while synthesis is pending suppresses late playback", asy
 
 test("default style discovery, query text, and synthesis speed", async () => {
   const paths: string[] = [];
-  const synth = voicevox({enabled:true,apiAddress:"http://localhost:50021",speakerId:null,speed:1.2,autoPlay:true}, async (input, init) => {
+  const speeds: number[] = [];
+  const synth = voicevox({enabled:true,apiAddress:"http://localhost:50021",speakerId:null,speed:0.8,autoPlay:true}, async (input, init) => {
     const url = new URL(String(input));
     paths.push(url.pathname);
     if (url.pathname === "/speakers") return Response.json([{name:"玄野武宏",styles:[{name:"ノーマル",id:17}]}]);
@@ -60,9 +61,11 @@ test("default style discovery, query text, and synthesis speed", async () => {
       assert.equal(url.searchParams.get("text"), "文");
       return Response.json({speedScale:1});
     }
-    assert.equal(JSON.parse(String(init?.body)).speedScale,1.2);
+    speeds.push(JSON.parse(String(init?.body)).speedScale);
     return new Response("RIFF0000WAVE");
   });
   await synth("文", new AbortController().signal);
-  assert.deepEqual(paths, ["/speakers","/audio_query","/synthesis"]);
+  await synth("文", new AbortController().signal, true);
+  assert.deepEqual(speeds, [0.8, 0.5]);
+  assert.deepEqual(paths, ["/speakers","/audio_query","/synthesis","/audio_query","/synthesis"]);
 });

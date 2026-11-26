@@ -10,7 +10,8 @@ function isGrammarToken(token: Token, tokens: Token[], enabled: Set<string>) {
   const prior = tokens[index - 1];
   const next = tokens[index + 1];
   const followsTe = prior?.[5] === start && prior[6] === "接続助詞" && /^[てで]$/.test(prior[0]);
-  return (enabled.has("te-imperative-request") && followsTe && surface === "ください" && lemma === "くださる")
+  return (enabled.has("everyday-forms") && ((lemma === "たい" && pos === "助動詞") || (followsTe && lemma === "いる") || lemma === "つもり"))
+    || (enabled.has("te-imperative-request") && followsTe && surface === "ください" && lemma === "くださる")
     || (enabled.has("past-progressive") && followsTe && lemma === "いる" && subtype === "非自立可能")
     || (enabled.has("reported-instruction") && (
       (surface === "よう" && subtype === "助動詞語幹" && next?.[4] === end && next[0] === "に")
@@ -90,7 +91,7 @@ const authorPrompt = [
   "Privately imagine plausible situations from conversation, daily routines, work, school, shopping, transportation, relationships, plans or past experiences. Write what a native Japanese speaker might really say. Make each sentence self-contained enough to translate, with ordinary subject or object omission where natural.",
   "Avoid forced combinations, implausible actions, redundancy, empty or excessively vague statements, and details added solely to fit a preferred word. Vary actions, subjects, objects and constructions when natural. Avoid recycling a template with just one word changed. On refills, favor underrepresented content words and vary repeated main verbs and patterns where natural. These are soft preferences. Keep common supporting words and the required grammar available.",
   "Do not repeat previously accepted or rejected sentences. Replace awkward candidates before submitting. Avoid names and digits.",
-  'Return exactly count Japanese strings as JSON: {"sentences":["本を読みました。","電気をつけました。"]}. Include no IDs, metadata, translations or explanations.',
+  'Return exactly count Japanese strings as JSON: {"sentences":["日本語の文"]}. Include no IDs, metadata, translations or explanations.',
 ].join("\n");
 
 const translatorPrompt = [
@@ -328,7 +329,7 @@ export async function generateTrial({ vocabulary, targets, gate, analyze, infer,
   const atLevel = eligibleTargets.filter(entry => entry.difficulty === difficulty);
   const grammar = difficulty ? { difficulty, entries, targets: (atLevel.length ? atLevel : eligibleTargets).map(entry => entry.id) } : undefined;
   const enabledGrammar = new Set(entries.map(entry => entry.id));
-  const generationPrompt = grammar ? authorPrompt.replace(/with a polite-past main verb ending in .*?\. Follow/, "using only enabled grammar from the supplied inventory. Use at least one target construction and follow the difficulty guidance. Difficulty comes from grammar and structure. Keep vocabulary familiar and the phrasing natural. Follow") : authorPrompt;
+  const generationPrompt = grammar ? authorPrompt.replace(/with a polite-past main verb ending in .*?\. Follow/, "using only enabled grammar from the supplied inventory. Use at least one target construction and follow the difficulty guidance. Difficulty comes from grammar and structure. Plan variety inside this batch: choose different communicative purposes (asking a question, making a request, describing an event or plan) and vary tense, polarity, aspect and modality where enabled and natural. Use sessionForms to favor underrepresented choices on later batches and refills. Consider priorAccepted when choosing forms. Keep vocabulary familiar. Follow") : authorPrompt;
   const { maxPercent, maxWordsPerExercise } = expansionPolicy;
   if (!Number.isInteger(maxPercent) || maxPercent < 0 || maxPercent > 100 || !Number.isSafeInteger(maxWordsPerExercise) || maxWordsPerExercise < 0)
     throw new Error("Expansion policy requires integer maxPercent (0–100) and nonnegative integer maxWordsPerExercise.");
@@ -354,7 +355,7 @@ export async function generateTrial({ vocabulary, targets, gate, analyze, infer,
     const usage = summarizeUsage(accepted);
     onCall?.("generation", attempt);
     const authored = await request(infer, generationPrompt, {
-      count: requested, expansionPolicy, grammar: grammar ? { ...grammar, guidance: guidance[grammar.difficulty] } : politePast, preferredTargets, vocabulary,
+      count: requested, ...(grammar ? { sessionForms: formDistribution([...previous, ...accepted]) } : {}), expansionPolicy, grammar: grammar ? { ...grammar, guidance: guidance[grammar.difficulty] } : politePast, preferredTargets, vocabulary,
       ...(accepted.length ? { diversity: {
         coveredContent: usage.coveredContent.slice(0, 20),
         repeatedContent: usage.repeatedContent.slice(0, 5),
@@ -424,7 +425,7 @@ export async function generateTrial({ vocabulary, targets, gate, analyze, infer,
         contentWords.push(lemma);
         return true;
       });
-      if (item.targetGrammarId !== politePast || !/(ました|ませんでした)$/.test(key)) {
+      if (!grammar && !/(ました|ませんでした)$/.test(key)) {
         block(item, "expected a polite-past verb ending in ました or ませんでした", deterministicRejections);
       } else if (!unknown.length && !used.length && !lemmas.size) {
         block(item, "no lexical item", deterministicRejections);
@@ -514,4 +515,21 @@ export function finalizeExpansion(accepted: AcceptedExercise[], deferred: Accept
   const expanded = accepted.filter(question => question.words?.length).length;
   const spare = expansionCapacity(accepted.length - expanded, maxPercent, size) - expanded;
   return [...accepted, ...deferred.slice(0, Math.max(0, spare))];
+}
+
+export function formDistribution(items: { referenceJa: string }[]) {
+  const counts: Record<string, number> = {};
+  for (const { referenceJa } of items) {
+    const text = japaneseKey(referenceJa);
+    const labels = [
+      /ください$/.test(text) ? "request" : /[？?]$/.test(referenceJa) || /か$/.test(text) ? "question" : "statement",
+      /(?:た|だ)(?:か)?$/.test(text) && !/[^っんい]だ(?:か)?$/.test(text) ? "past" : "non-past",
+      /ません|ない|なかった/.test(text) ? "negative" : "affirmative",
+    ];
+    if (/[てで]い(?:る|た|ま|な)/.test(text)) labels.push("progressive");
+    if (/たい|たくな/.test(text)) labels.push("desire");
+    if (/つもり/.test(text)) labels.push("intention");
+    for (const label of labels) counts[label] = (counts[label] ?? 0) + 1;
+  }
+  return counts;
 }

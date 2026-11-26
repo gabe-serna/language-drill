@@ -16,6 +16,22 @@
       ]
     },
     {
+      "id": "everyday-forms",
+      "name": "Everyday predicates",
+      "pattern": "〜ます・〜ません・〜ています・〜たい・〜つもり",
+      "description": "Describe present or future events, ask questions and express desires or intentions.",
+      "usageRules": [
+        "Choose a natural form for the situation and selected difficulty."
+      ],
+      "difficulty": "easy",
+      "enabled": true,
+      "examples": [
+        "本を読みますか。",
+        "魚を食べたいです。",
+        "公園を歩いています。"
+      ]
+    },
+    {
       "id": "basic-particles",
       "supportingOnly": true,
       "name": "Core particles",
@@ -54,7 +70,7 @@
         "Use the appropriate te form followed by ください."
       ],
       "difficulty": "easy",
-      "enabled": false,
+      "enabled": true,
       "examples": [
         "ドアを開けてください。"
       ]

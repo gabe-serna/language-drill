@@ -1,6 +1,6 @@
 import { requestInference, type Inference } from "./inference.ts";
 
-export type Question = { english: string; referenceJa: string };
+export type Question = { english: string; referenceJa: string; difficulty?: import("./grammar.ts").Difficulty; words?: { lemma: string; reading: string; meaning: string }[] };
 export type Grade = {
   verdict: "correct" | "partially_correct" | "incorrect";
   feedback: string;
