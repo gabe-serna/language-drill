@@ -13,7 +13,9 @@ const gradingPrompt = [
   "Accept equivalent vocabulary, particles, constructions, word order, and omitted subjects. Vocabulary knowledge is unrestricted. Accept minor nuances and stylistic differences that preserve meaning.",
   "Flag meaningful differences in tense, aspect, negation, modality, agency, or temporal relationships. Distinguish genuine errors from optional style. Avoid invented errors and absolute claims about flexible grammar.",
   "Use correct for a valid translation, partially_correct when the central meaning survives genuine errors, and incorrect when it does not. For correct, errors must be empty. Otherwise give at least one specific error.",
-  "For a correct natural answer give just a brief confirmation. Mention register, emphasis or usage only when the nuance is useful. Never invent a distinction or assume the reference is superior. For partial or incorrect answers identify the specific mistakes once, explain why and guide the next edit. Write in English. For correct answers you may quote short Japanese fragments. For any other verdict give guidance entirely in English. Never supply a complete corrected sentence.",
+  "For a correct natural answer give just a brief confirmation. Mention register, emphasis or usage only when the nuance is useful. Never invent a distinction or assume the reference is superior.",
+  "Write explanations in English and quote useful Japanese vocabulary, particles, conjugations, or short corrected phrases as needed. For partially correct or incorrect answers, identify the specific mistakes and explain why they matter.",
+  "Correct and partially correct verdicts finish the question. For an incorrect answer with attemptsRemainingAfterSubmission greater than zero, guide the learner's next edit while withholding the complete reference translation and any complete corrected sentence. The study interface reveals the reference at completion.",
   'Return only JSON of the form {"verdict":"partially_correct","feedback":"The main action is clear.","errors":["The answer describes an ongoing action rather than a completed event."]}.',
 ].join("\n");
 
@@ -38,9 +40,9 @@ async function readResult(infer: Inference, systemPrompt: string, data: object) 
 const isLine = (value: unknown): value is string =>
   typeof value === "string" && !!value.trim() && value.length <= 300 && !/[\p{Cc}]/u.test(value);
 
-export async function gradeAnswer(infer: Inference, question: Question, answer: string): Promise<Grade> {
+export async function gradeAnswer(infer: Inference, question: Question, answer: string, attemptsRemainingAfterSubmission = 2): Promise<Grade> {
   const { verdict, feedback, errors } = await readResult(infer, gradingPrompt, {
-    english: question.english, referenceJa: question.referenceJa, answer,
+    english: question.english, referenceJa: question.referenceJa, answer, attemptsRemainingAfterSubmission,
   }) as Record<string, unknown>;
   if (verdict !== "correct" && verdict !== "partially_correct" && verdict !== "incorrect")
     throw new Error("Invalid grading verdict.");
@@ -48,9 +50,6 @@ export async function gradeAnswer(infer: Inference, question: Question, answer: 
   if (!Array.isArray(errors) || errors.length > 4 || !errors.every(isLine)
       || (verdict === "correct" ? errors.length !== 0 : errors.length === 0))
     throw new Error("Invalid grading errors for the verdict.");
-  if (verdict !== "correct" && [feedback, ...errors].some(line =>
-    /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(line)))
-    throw new Error("Feedback contains a possible complete Japanese answer.");
   return { verdict, feedback, errors };
 }
 

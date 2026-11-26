@@ -1,0 +1,156 @@
+{
+  "entries": [
+    {
+      "id": "polite-past",
+      "name": "Polite past verbs",
+      "pattern": "〜ました / 〜ませんでした",
+      "description": "Report a completed action or the absence of an action.",
+      "usageRules": [
+        "End the main clause in polite past. Use the negative form where the meaning requires it."
+      ],
+      "difficulty": "easy",
+      "enabled": true,
+      "examples": [
+        "本を読みました。",
+        "何も買いませんでした。"
+      ]
+    },
+    {
+      "id": "basic-particles",
+      "supportingOnly": true,
+      "name": "Core particles",
+      "pattern": "は・が・を・に・で・へ・と・の・も",
+      "description": "Mark the topic, subject, object, location, direction, companion or noun relationship.",
+      "usageRules": [
+        "Match the particle to the verb and the intended relationship."
+      ],
+      "difficulty": "easy",
+      "enabled": true,
+      "examples": [
+        "公園で友達と遊びました。"
+      ]
+    },
+    {
+      "id": "adverbial-modifiers",
+      "supportingOnly": true,
+      "name": "Time and manner modifiers",
+      "pattern": "時間表現・副詞・形容詞の連用形",
+      "description": "Specify when, how or how much an action happened.",
+      "usageRules": [
+        "Use only modifiers compatible with the event and time reference."
+      ],
+      "difficulty": "easy",
+      "enabled": true,
+      "examples": [
+        "昨日、早く家を出ました。"
+      ]
+    },
+    {
+      "id": "te-imperative-request",
+      "name": "Polite request",
+      "pattern": "〜てください",
+      "description": "Ask someone to do something.",
+      "usageRules": [
+        "Use the appropriate te form followed by ください."
+      ],
+      "difficulty": "easy",
+      "enabled": false,
+      "examples": [
+        "ドアを開けてください。"
+      ]
+    },
+    {
+      "id": "past-progressive",
+      "name": "Past progressive",
+      "pattern": "〜ていました",
+      "description": "Describe an ongoing action in the past.",
+      "usageRules": [
+        "Use with an action underway at the stated time."
+      ],
+      "difficulty": "easy",
+      "enabled": false,
+      "examples": [
+        "昨日、公園で遊んでいました。"
+      ]
+    },
+    {
+      "id": "after-te",
+      "name": "Sequence with after",
+      "pattern": "〜てから",
+      "description": "Place one event after another.",
+      "usageRules": [
+        "Mark the earlier action with てから."
+      ],
+      "difficulty": "medium",
+      "enabled": false,
+      "examples": [
+        "家に帰ってから、ゆっくり休みました。"
+      ]
+    },
+    {
+      "id": "past-existence",
+      "name": "Past existence",
+      "pattern": "〜に〜がいました / ありました",
+      "description": "Describe who or what was present in the past.",
+      "usageRules": [
+        "Use いる for animate entities and ある for inanimate entities in ordinary contexts."
+      ],
+      "difficulty": "medium",
+      "enabled": false,
+      "examples": [
+        "昨日、会社には人がたくさんいました。"
+      ]
+    },
+    {
+      "id": "reported-instruction",
+      "name": "Reported instruction",
+      "pattern": "〜ように言いました / 言われました",
+      "description": "Report what someone was told to do.",
+      "usageRules": [
+        "Make the speaker, recipient and requested action clear."
+      ],
+      "difficulty": "medium",
+      "enabled": false,
+      "examples": [
+        "母に、公園では気をつけるように言われました。"
+      ]
+    },
+    {
+      "id": "contrast",
+      "name": "Contrast between clauses",
+      "pattern": "〜が / 〜けど",
+      "description": "Link two events or statements in contrast.",
+      "usageRules": [
+        "Each clause must contribute to the contrast."
+      ],
+      "difficulty": "hard",
+      "enabled": false,
+      "examples": [
+        "店で服を見ましたが、何も買いませんでした。"
+      ]
+    },
+    {
+      "id": "mid-action",
+      "name": "Interrupting an ongoing event",
+      "pattern": "〜の途中で",
+      "description": "Locate a second event partway through the first event.",
+      "usageRules": [
+        "Name the ongoing event clearly and keep the sequence coherent."
+      ],
+      "difficulty": "hard",
+      "enabled": false,
+      "examples": [
+        "昨夜、友達と映画を見ましたが、途中で帰りました。"
+      ]
+    }
+  ],
+  "distribution": {
+    "easy": 50,
+    "medium": 30,
+    "hard": 20
+  },
+  "recent": {
+    "windowDays": 30,
+    "boost": 4
+  }
+}

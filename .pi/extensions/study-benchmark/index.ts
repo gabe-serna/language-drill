@@ -1,3 +1,5 @@
+import { allocate, levels, loadGrammar, shuffle } from "./grammar.ts";
+import { voicevox, sessionAudio, type Settings } from "./voicevox.ts";
 import { wrapTextWithAnsi, matchesKey } from "@earendil-works/pi-tui";
 import { gradeAnswer, explainAnswer, type Grade } from "./grading.ts";
 import { spawn } from "node:child_process";
@@ -6,12 +8,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
-import { buildVocabularyGate, generateTrial, translateBatch, validateBatch, type Inference, type Token } from "./generation.ts";
+import { buildVocabularyGate, finalizeExpansion, generateTrial, translateBatch, validateBatch, type Inference, type Token } from "./generation.ts";
 import { indexKnownExamples, mergeVocabulary, readFoundationalVocabulary, selectPracticeVocabulary } from "./vocabulary.ts";
 import { loadAnkiVocabulary } from "./anki.ts";
 import { translationCases, validatorCases } from "./validator-cases.ts";
 
-import { studyCommand, studyCompletions, studyGrammar, runQuestions } from "./session.ts";
+import { studyCommand, studyCompletions, runQuestions } from "./session.ts";
 
 function deadline(ms: number, signal?: AbortSignal) {
   const timeout = AbortSignal.timeout(ms);
@@ -131,42 +133,50 @@ export default function (pi: ExtensionAPI) {
           await closed;
         }
       }
+      let audio: ReturnType<typeof sessionAudio> | undefined;
+      let autoPlay = false;
       const tokens = args.trim().split(/\s+/);
       const traces: InferenceTrace[] | undefined = tokens.includes("--debug") ? [] : undefined;
       try {
-        let count = studyCommand(tokens.filter(token => token !== "--debug").join(" "));
+        const catalog = loadGrammar(join(root, "data", "grammar.json"));
+        let options = studyCommand(tokens.filter(token => token !== "--debug").join(" "));
         const { entries, menu } = await prepare("Loading study vocabulary", async () => {
-          const [anki, foundational] = await Promise.all([loadAnkiVocabulary(signal), readFoundationalVocabulary(foundationalPath)]);
+          const [anki, foundational] = await Promise.all([loadAnkiVocabulary(signal, options?.recent), readFoundationalVocabulary(foundationalPath)]);
           const entries = mergeVocabulary(anki.entries, foundational);
           const known = new Set(entries.map(item => item.headword)).size;
-          return { entries, menu: `Study | ${anki.count} eligible cards | ${foundational.length} foundational entries | ${known} known headwords | Grammar: ${studyGrammar.join(", ")}` };
+          return { entries, menu: `Study | ${anki.count} eligible cards | ${foundational.length} foundational entries | ${known} known headwords | Grammar: ${catalog.entries.length} enabled | Difficulty: easy, medium, hard or mixed | --recent available` };
         });
-        if (count === undefined) {
-          const choice = await ctx.ui.select(menu, ["/study drilling --q 10", "Exit"]);
+        if (!options) {
+          const choice = await ctx.ui.select(menu, ["/study drilling --q 10 (mixed)", ...levels.map(level => "/study drilling --difficulty " + level), "Exit"]);
           if (!choice || choice === "Exit") return;
-          count = 10;
+          options = studyCommand(choice.replace("/study ", "").replace(" (mixed)", ""))!;
         }
-        const requested = count;
+        const { count: requested, difficulty, recent } = options;
         const questions = await prepare("Preparing exercises (Esc to exit)", async () => {
           const tokenize = (lines: string[]) => analyze(lines, signal);
           const gate = await buildVocabularyGate(new Set(entries.map(item => item.headword)), tokenize);
           const examples = await indexKnownExamples(entries, gate, tokenize);
           const expansionPolicy = JSON.parse(readFileSync(join(root, "data", "vocabulary-expansion.json"), "utf8"));
           const accepted: Awaited<ReturnType<typeof generateTrial>>["accepted"] = [];
+          const deferred: typeof accepted = [];
           const seed = Date.now();
-          while (accepted.length < requested) {
-            signal.throwIfAborted();
-            const size = Math.min(10, requested - accepted.length);
-            const sample = selectPracticeVocabulary(entries, seed + accepted.length, examples);
-            const result = await generateTrial({ ...sample, size, previous: accepted, gate, analyze: tokenize,
-              expansionPolicy, infer: inference(ctx, signal), onCall(stage, attempt) {
-                signal.throwIfAborted();
-                ctx.ui.setStatus("study", `Prepared ${accepted.length}/${requested} | ${stage} | attempt ${attempt}/3`);
-              } });
-            accepted.push(...result.accepted);
-            if (result.accepted.length < size) break;
+          for (const tier of allocate(requested, catalog.distribution, difficulty)) {
+            for (let remaining = tier.count; remaining > 0;) {
+              signal.throwIfAborted();
+              const size = Math.min(10, remaining);
+              const sample = selectPracticeVocabulary(entries, seed + accepted.length, examples, recent ? catalog.recent : undefined);
+              const result = await generateTrial({ ...sample, size, difficulty: tier.difficulty, grammarEntries: catalog.entries,
+                previous: [...accepted, ...deferred], gate, analyze: tokenize, expansionPolicy, infer: inference(ctx, signal), onCall(stage, attempt) {
+                  signal.throwIfAborted();
+                  ctx.ui.setStatus("study", `Prepared ${accepted.length}/${requested} | ${tier.difficulty} | ${stage} | attempt ${attempt}/3`);
+                } });
+              accepted.push(...result.accepted);
+              deferred.push(...result.pending);
+              remaining -= size;
+            }
           }
-          return accepted;
+          const questions = finalizeExpansion(accepted, deferred, expansionPolicy.maxPercent, requested);
+          return difficulty ? questions : shuffle(questions);
         });
         ctx.ui.setStatus("study", undefined);
         if (questions.length < requested) ctx.ui.notify(`Prepared ${questions.length} of ${requested} requested exercises within the retry limit.`, "warning");
@@ -175,7 +185,14 @@ export default function (pi: ExtensionAPI) {
           ? [({ correct: "Correct", partially_correct: "Partially correct", incorrect: "Incorrect" })[grade.verdict],
             grade.feedback, ...grade.errors.map(error => "- " + error)].join("\n")
           : "";
+        try {
+          const settings: Settings = JSON.parse(readFileSync(join(root, "data", "voicevox.json"), "utf8"));
+          const synthesize = voicevox(settings);
+          if (settings.enabled) audio = sessionAudio(synthesize);
+          autoPlay = settings.autoPlay;
+        } catch { ctx.ui.notify("Reference audio unavailable. Check data/voicevox.json.", "warning"); }
         const result = await runQuestions(questions, {
+          begin: question => audio?.preload(question.referenceJa),
           async answer({ prompt, draft, attempts, failure }) {
             const remaining = 3 - attempts.length;
             const status = failure ? `${failure} Your draft is ready to retry.` : "";
@@ -188,11 +205,11 @@ export default function (pi: ExtensionAPI) {
             const answer = await ctx.ui.editor(prompt, draft);
             return answer === undefined ? { action: "exit" } : { action: "submit", answer };
           },
-          async grade(question, answer) {
+          async grade(question, answer, attemptsRemainingAfterSubmission) {
             const grading = new AbortController();
             try {
               return await prepare("Grading answer (Esc to cancel)", () =>
-                gradeAnswer(inference(ctx, grading.signal, traces, () => "grading"), question, answer), grading);
+                gradeAnswer(inference(ctx, grading.signal, traces, () => "grading"), question, answer, attemptsRemainingAfterSubmission), grading);
             } catch (error) {
               const message = grading.signal.aborted ? "Grading cancelled." :
                 error instanceof Error && error.name === "TimeoutError" ? "Grading timed out." :
@@ -205,6 +222,9 @@ export default function (pi: ExtensionAPI) {
             const explaining = new AbortController();
             try {
               return await ctx.ui.custom<boolean>((tui, theme, keys, done) => {
+                let firstRender = true;
+                let audioFailed = false;
+                const replay = () => audio?.replay(question.referenceJa, () => { audioFailed = true; tui.requestRender(); });
                 let expanded = false;
                 let points = ["Preparing breakdown…"];
                 let selected = 0;
@@ -215,6 +235,8 @@ export default function (pi: ExtensionAPI) {
                 return {
                   invalidate() {},
                   render(width) {
+                    if (firstRender && autoPlay) queueMicrotask(() => { if (!explaining.signal.aborted) replay(); });
+                    firstRender = false;
                     const verdict = lastGrade?.verdict;
                     const label = verdict === "correct" ? "Correct" : verdict === "partially_correct" ? "Partially correct" : verdict ? "Incorrect" : "Gave up";
                     const color = verdict === "correct" ? "success" : verdict === "partially_correct" ? "warning" : verdict ? "error" : "muted";
@@ -223,6 +245,7 @@ export default function (pi: ExtensionAPI) {
                       ...(lastGrade ? [lastGrade.feedback, ...lastGrade.errors] : []),
                       ...(outcome === "gave_up" && verdict ? [theme.fg("muted", "Gave up")] : []),
                       "", theme.fg("muted", expanded ? "[E] Hide breakdown" : "[E] Show breakdown"),
+                      ...(audio ? [theme.fg("muted", audioFailed ? "[P] Replay reference audio (unavailable)" : "[P] Replay reference audio")] : []),
                       ...(expanded ? points : []), "", ...["Continue", "Exit"].map((name, i) => (selected === i ? "→ " : "  ") + name)];
                     return lines.flatMap(line => wrapTextWithAnsi(line, width));
                   },
@@ -230,21 +253,24 @@ export default function (pi: ExtensionAPI) {
                     if (keys.matches(data, "tui.select.cancel")) return done(false);
                     if (keys.matches(data, "tui.select.confirm")) return done(selected === 0);
                     if (matchesKey(data, "e") || matchesKey(data, "shift+e") || data === "E") expanded = !expanded;
+                    else if (matchesKey(data, "p") || matchesKey(data, "shift+p") || data === "P") replay();
                     else if (keys.matches(data, "tui.select.up") || keys.matches(data, "tui.select.down")) selected = 1 - selected;
                     tui.requestRender();
                   },
                 };
               });
-            } finally { explaining.abort(); }
+            } finally { explaining.abort(); audio?.stop(); }
           },
         });
         const evaluated = result.records.reduce((total, record) => total + record.attempts.length, 0);
         const correct = result.records.filter(record => record.outcome === "correct").length;
-        ctx.ui.notify(`${result.completed ? "Study complete" : "Study ended"} | Correct ${correct}/${questions.length} | Evaluated attempts ${evaluated}`, "info");
+        const partial = result.records.filter(record => record.outcome === "partially_correct").length;
+        ctx.ui.notify(`${result.completed ? "Study complete" : "Study ended"} | Correct ${correct}/${questions.length} | Partially correct ${partial} | Evaluated attempts ${evaluated}`, "info");
       } catch (error) {
         ctx.ui.notify(signal.aborted ? "Study cancelled." : String(error), signal.aborted ? "info" : "error");
       } finally {
         controller.abort();
+        await audio?.close();
         ctx.ui.setStatus("study", undefined);
         try { if (traces?.length) await ctx.ui.editor("Study debug (Esc to close)", formatDebug(traces)); }
         finally { running = false; }
@@ -264,10 +290,10 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       const tokens = args.trim().split(/\s+/).filter(Boolean);
-      const modes = tokens.filter(token => token !== "--debug");
+      const modes = tokens.filter(token => token !== "--debug" && token !== "--recent");
       const [mode = ""] = modes;
-      if (modes.length > 1 || (mode && mode !== "validator" && mode !== "translator")) {
-        ctx.ui.notify("Usage: /study-benchmark [validator|translator] [--debug]", "warning");
+      if (modes.length > 1 || (mode && !["validator", "translator", "mixed", ...levels].includes(mode))) {
+        ctx.ui.notify("Usage: /study-benchmark [validator|translator|mixed|easy|medium|hard] [--recent] [--debug]", "warning");
         return;
       }
       const debug = tokens.includes("--debug");
@@ -309,7 +335,12 @@ export default function (pi: ExtensionAPI) {
           return;
         }
         let inferenceCalls = 0;
-        const anki = await loadAnkiVocabulary();
+        const catalog = loadGrammar(join(root, "data", "grammar.json"));
+        const recent = tokens.includes("--recent") ? catalog.recent : undefined;
+        const now = Date.now();
+        const measureRecency = !!mode || !!recent;
+        const anki = await loadAnkiVocabulary(undefined, measureRecency, !!recent);
+        const tiers = mode ? allocate(10, catalog.distribution, levels.find(level => level === mode)) : [{ difficulty: undefined, count: 10 }];
         const entries = mergeVocabulary(anki.entries, foundational);
         const known = new Set(entries.map(item => item.headword));
         const gate = await buildVocabularyGate(known, analyze);
@@ -320,47 +351,73 @@ export default function (pi: ExtensionAPI) {
         const expansionPolicy = JSON.parse(readFileSync(join(root, "data", "vocabulary-expansion.json"), "utf8"));
         let fullTrials = 0;
         for (let trial = 1; trial <= 3; trial++) {
-          const started = Date.now();
-          const { vocabulary, targets } = selectPracticeVocabulary(entries, 80 + trial, examples);
-          const result = await generateTrial({
-            vocabulary, targets, gate, analyze, infer, expansionPolicy, report: diagnostic,
-            onCall: (stage, attempt) => {
-              label = `Trial ${trial}/3 · ${stage} ${attempt}/3`;
-              ctx.ui.setStatus("study-benchmark", label);
-            },
-          });
-          const first = result.calls[0];
-          const trialCalls = result.calls.reduce((sum, call) => sum + 1 + Number(call.translated) + Number(call.reviewed), 0);
-          inferenceCalls += trialCalls;
-          if (result.accepted.length === 10) fullTrials++;
-          report.push("", `Trial ${trial}: first-pass deterministic ${rate(first.deterministicAccepted, first.candidates)} (${first.deterministicAccepted}/10 requested), AI ${rate(first.aiAccepted, first.reviewedCandidates)}; final ${result.accepted.length}/10`);
-          report.push(`  Japanese generation ${seconds(result.calls.reduce((sum, call) => sum + call.generationMs, 0))}; English translation ${seconds(result.calls.reduce((sum, call) => sum + call.translationMs, 0))}; AI validation ${seconds(result.calls.reduce((sum, call) => sum + call.validationMs, 0))}; elapsed ${seconds(Date.now() - started)}; ${trialCalls} inference calls`);
-          report.push(`  Unique accepted headwords: ${result.uniqueVocabulary}; content headwords: ${result.usage.uniqueContent}; identifiable main verbs: ${result.usage.uniqueMainVerbs}`);
-          report.push("  Most repeated content headwords: " + JSON.stringify(result.usage.repeatedContent.slice(0, 10)));
-          report.push("  Repeated main verbs: " + JSON.stringify(result.usage.repeatedMainVerbs));
-          report.push("  Repeated morphological patterns: " + JSON.stringify(result.usage.repeatedPatterns));
-          const coveredTargets = Object.values(result.targetUses).filter(uses => uses > 0).length;
-          report.push(`  Preferred targets covered: ${coveredTargets}/${Object.keys(result.targetUses).length}; sentence counts: ${JSON.stringify(result.targetUses)}`);
-          report.push("  Targets abandoned before refills: " + JSON.stringify(Object.fromEntries(result.abandonedTargets)));
-          const duplicates = result.calls.reduce((total, call) => total + (call.deterministicRejections["duplicate Japanese"] ?? 0), 0);
-          const englishDuplicates = result.calls.reduce((total, call) => total + (call.translationRejections["duplicate English"] ?? 0), 0);
-          report.push(`  Exact duplicates: ${duplicates} Japanese, ${englishDuplicates} English; near-duplicate Japanese candidates flagged: ${result.calls.reduce((total, call) => total + call.nearDuplicates, 0)}`);
-          for (const [i, call] of result.calls.entries()) {
-            report.push(`  Request ${i + 1}: deterministic ${rate(call.deterministicAccepted, call.candidates)} (${call.requested} requested); AI ${rate(call.aiAccepted, call.reviewedCandidates)}; generation ${seconds(call.generationMs)}; translation ${call.translated ? seconds(call.translationMs) : "skipped"}; review ${call.reviewed ? seconds(call.validationMs) : "skipped"}`);
-            report.push("    Deterministic rejections: " + JSON.stringify(call.deterministicRejections));
-            report.push("    Translation rejections: " + JSON.stringify(call.translationRejections));
-            report.push("    AI rejections: " + JSON.stringify(call.aiRejections));
-            report.push(`    Accepted content headwords: ${call.usage.uniqueContent}; identifiable main verbs: ${call.usage.uniqueMainVerbs}; near-duplicates flagged: ${call.nearDuplicates}`);
-            report.push("    Preferred-target sentence counts: " + JSON.stringify(call.targetUses));
+          const all: Awaited<ReturnType<typeof generateTrial>>["accepted"] = [];
+          const deferred: typeof all = [];
+          for (const tier of tiers) {
+            const started = Date.now();
+            const { vocabulary, targets } = selectPracticeVocabulary(entries, 80 + trial, examples, recent, now);
+            const result = await generateTrial({
+              vocabulary, targets, gate, analyze, infer, expansionPolicy, report: diagnostic,
+              size: tier.count, difficulty: tier.difficulty, grammarEntries: catalog.entries, previous: [...all, ...deferred],
+              onCall: (stage, attempt) => {
+                label = `Trial ${trial}/3 · ${stage} ${attempt}/3`;
+                ctx.ui.setStatus("study-benchmark", label);
+              },
+            });
+            const first = result.calls[0];
+            const trialCalls = result.calls.reduce((sum, call) => sum + 1 + Number(call.translated) + Number(call.reviewed), 0);
+            inferenceCalls += trialCalls;
+            all.push(...result.accepted);
+            deferred.push(...result.pending);
+            const used = new Set(result.accepted.flatMap(item => item.used));
+            const recentUsed = new Set(entries.filter(item => item.reviewedAt !== undefined &&
+              now - item.reviewedAt < catalog.recent.windowDays * 86_400_000 && used.has(item.headword)).map(item => item.headword));
+            report.push(`  Difficulty ${tier.difficulty ?? "legacy"}: ${result.accepted.length}/${tier.count}; refills ${result.calls.length - 1}`);
+            const unexpected = result.calls.flatMap(call => Object.entries(call.aiRejections)
+              .filter(([reason]) => /^Unexpected grammar:/i.test(reason)));
+            if (unexpected.length) report.push("  Unexpected grammar: " + JSON.stringify(unexpected));
+            if (measureRecency) report.push(`  Recently reviewed headwords used: ${recentUsed.size}/${used.size}`);
+            report.push("", `Trial ${trial}: first-pass deterministic ${rate(first.deterministicAccepted, first.candidates)} (${first.deterministicAccepted}/${tier.count} requested), AI ${rate(first.aiAccepted, first.reviewedCandidates)}; final ${result.accepted.length}/${tier.count}`);
+            report.push(`  Japanese generation ${seconds(result.calls.reduce((sum, call) => sum + call.generationMs, 0))}; English translation ${seconds(result.calls.reduce((sum, call) => sum + call.translationMs, 0))}; AI validation ${seconds(result.calls.reduce((sum, call) => sum + call.validationMs, 0))}; elapsed ${seconds(Date.now() - started)}; ${trialCalls} inference calls`);
+            report.push(`  Unique accepted headwords: ${result.uniqueVocabulary}; content headwords: ${result.usage.uniqueContent}; identifiable main verbs: ${result.usage.uniqueMainVerbs}`);
+            report.push("  Most repeated content headwords: " + JSON.stringify(result.usage.repeatedContent.slice(0, 10)));
+            report.push("  Repeated main verbs: " + JSON.stringify(result.usage.repeatedMainVerbs));
+            report.push("  Repeated morphological patterns: " + JSON.stringify(result.usage.repeatedPatterns));
+            const coveredTargets = Object.values(result.targetUses).filter(uses => uses > 0).length;
+            report.push(`  Preferred targets covered: ${coveredTargets}/${Object.keys(result.targetUses).length}; sentence counts: ${JSON.stringify(result.targetUses)}`);
+            report.push("  Targets abandoned before refills: " + JSON.stringify(Object.fromEntries(result.abandonedTargets)));
+            const duplicates = result.calls.reduce((total, call) => total + (call.deterministicRejections["duplicate Japanese"] ?? 0), 0);
+            const englishDuplicates = result.calls.reduce((total, call) => total + (call.translationRejections["duplicate English"] ?? 0), 0);
+            report.push(`  Exact duplicates: ${duplicates} Japanese, ${englishDuplicates} English; near-duplicate Japanese candidates flagged: ${result.calls.reduce((total, call) => total + call.nearDuplicates, 0)}`);
+            for (const [i, call] of result.calls.entries()) {
+              report.push(`  Request ${i + 1}: deterministic ${rate(call.deterministicAccepted, call.candidates)} (${call.requested} requested); AI ${rate(call.aiAccepted, call.reviewedCandidates)}; generation ${seconds(call.generationMs)}; translation ${call.translated ? seconds(call.translationMs) : "skipped"}; review ${call.reviewed ? seconds(call.validationMs) : "skipped"}`);
+              report.push("    Deterministic rejections: " + JSON.stringify(call.deterministicRejections));
+              report.push("    Translation rejections: " + JSON.stringify(call.translationRejections));
+              report.push("    AI rejections: " + JSON.stringify(call.aiRejections));
+              report.push(`    Accepted content headwords: ${call.usage.uniqueContent}; identifiable main verbs: ${call.usage.uniqueMainVerbs}; near-duplicates flagged: ${call.nearDuplicates}`);
+              report.push("    Preferred-target sentence counts: " + JSON.stringify(call.targetUses));
+            }
+            const expanded = result.accepted.filter(item => item.words?.length);
+            const knownOnly = result.accepted.length - expanded.length;
+            report.push(`  Known-only: ${rate(knownOnly, result.accepted.length)}; expanded: ${expanded.length}; final percentage-limit rejections: ${result.expansionLimitRejections}`);
+            for (const item of expanded) report.push(`  ${item.referenceJa} | ${JSON.stringify(item.words)}`);
+            for (const item of result.accepted) report.push(`  ${item.english}  |  ${item.referenceJa}`);
           }
-          const expanded = result.accepted.filter(item => item.words?.length);
-          const knownOnly = result.accepted.length - expanded.length;
-          report.push(`  Known-only: ${rate(knownOnly, result.accepted.length)}; expanded: ${expanded.length}; final percentage-limit rejections: ${result.expansionLimitRejections}`);
-          for (const item of expanded) report.push(`  ${item.referenceJa} | ${JSON.stringify(item.words)}`);
-          for (const item of result.accepted) report.push(`  ${item.english}  |  ${item.referenceJa}`);
+          const final = finalizeExpansion(all, deferred, expansionPolicy.maxPercent, 10);
+          if (final.length === 10) fullTrials++;
+          if (mode) {
+            report.push(`Trial ${trial} final distribution: ` + tiers.map(tier =>
+              `${tier.difficulty} ${final.filter(item => item.difficulty === tier.difficulty).length}/${tier.count}`).join(", "));
+            const added = final.slice(all.length);
+            for (const item of added) report.push(`  Added from session expansion budget (${item.difficulty}): ${item.english} | ${item.referenceJa}`);
+            const grammarUses = new Map<string, number>();
+            for (const item of final) for (const id of item.grammarIds ?? []) grammarUses.set(id, (grammarUses.get(id) ?? 0) + 1);
+            report.push("  Final grammar coverage: " + JSON.stringify(Object.fromEntries(grammarUses)));
+            report.push(`  Final expanded exercises: ${final.filter(item => item.words?.length).length}/${final.length}`);
+          }
         }
         report.push("", `Total elapsed: ${seconds(Date.now() - benchmarkStarted)}; ${inferenceCalls} inference calls`);
-        report.push("", `Automated threshold: ${fullTrials}/3 full trials (need 2). Review each pair for meaning, natural Japanese and polite past.`);
+        report.push("", `Automated threshold: ${fullTrials}/3 full trials (need 2). Review each pair for meaning, natural Japanese, and the requested grammar and difficulty.`);
         ctx.ui.setStatus("study-benchmark", undefined);
         await show("Study benchmark results");
       } catch (error) {

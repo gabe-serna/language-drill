@@ -1,0 +1,7 @@
+{
+  "enabled": true,
+  "apiAddress": "http://127.0.0.1:50021",
+  "speakerId": null,
+  "speed": 0.8,
+  "autoPlay": true
+}

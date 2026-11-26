@@ -4,8 +4,8 @@ import { runQuestions, studyCommand, studyCompletions } from "./session.ts";
 
 test("study menu, count, and completion", () => {
   assert.equal(studyCommand(""), undefined);
-  assert.equal(studyCommand("drilling"), 10);
-  assert.equal(studyCommand("drilling --q 12"), 12);
+  assert.equal(studyCommand("drilling")?.count, 10);
+  assert.equal(studyCommand("drilling --q 12")?.count, 12);
   for (const args of ["unknown", "drilling --q", "drilling --q 0", "drilling --q 1.5", "drilling --q 3 extra"])
     assert.throws(() => studyCommand(args), /positive integer/);
   assert.equal(studyCompletions("drilling --")?.[0].value, "drilling --q");
@@ -30,7 +30,8 @@ test("only evaluated submissions count, drafts survive failures, and reveal foll
       submissions++;
       return { action: "submit", answer: "学校を出ました。" };
     },
-    async grade() {
+    async grade(_item, _answer, remaining) {
+      assert.equal(remaining, [2, 2, 2, 1, 0][grading]);
       if (++grading === 1) throw Error("malformed JSON");
       if (grading === 2) throw new DOMException("Cancelled", "AbortError");
       return { ...wrong, errors: [...wrong.errors] };

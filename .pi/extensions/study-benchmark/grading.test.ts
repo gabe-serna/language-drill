@@ -1,6 +1,7 @@
 ﻿import assert from "node:assert/strict";
 import { test } from "node:test";
 import { explainAnswer, gradeAnswer } from "./grading.ts";
+import { runQuestions } from "./session.ts";
 
 const question = { english: "I was reading a book at home.", referenceJa: "家で本を読んでいました。" };
 const fixtures = [
@@ -16,7 +17,7 @@ test("grading sends only the current exercise and accepts structured verdicts fo
   for (const [answer, verdict, errors] of fixtures) {
     const payload = { verdict, feedback: "Feedback on this attempt.", errors };
     const grade = await gradeAnswer(async ({ systemPrompt, data }) => {
-      assert.deepEqual(data, { ...question, answer });
+      assert.deepEqual(data, { ...question, answer, attemptsRemainingAfterSubmission: 2 });
       assert.match(systemPrompt, /Accept equivalent vocabulary, particles/);
       assert.match(systemPrompt, /Vocabulary knowledge is unrestricted/);
       assert.match(systemPrompt, /tense, aspect/);
@@ -26,13 +27,55 @@ test("grading sends only the current exercise and accepts structured verdicts fo
   }
 });
 
-test("grading rejects incomplete, contradictory, and answer-revealing feedback", async () => {
+test("grading rejects incomplete and contradictory structured feedback", async () => {
   const answer = fixtures[0][0];
   for (const text of ["{", "[]", '{"verdict":"correct","feedback":"Fine","errors":["Wrong tense"]}',
-    '{"verdict":"incorrect","feedback":"Wrong","errors":[]}',
-    JSON.stringify({ verdict: "incorrect", feedback: question.referenceJa, errors: ["Wrong tense"] })])
+    '{"verdict":"incorrect","feedback":"Wrong","errors":[]}'])
     await assert.rejects(gradeAnswer(async () => ({ stop: "stop", text }), question, answer));
   await assert.rejects(gradeAnswer(async () => ({ stop: "length", text: "{}" }), question, answer), /did not finish/);
+});
+
+test("Japanese corrective feedback counts as an evaluated attempt and partial credit completes the question", async () => {
+  const wrong = {
+    verdict: "incorrect",
+    feedback: "Use 本 for a book, and use で for where the reading took place.",
+    errors: ["テレビを見ました describes watching TV. Use the past progressive 読んでいました for the ongoing action."],
+  };
+  const partial = {
+    verdict: "partially_correct",
+    feedback: "家で本を読みました captures the action, but 読みました leaves out the ongoing aspect.",
+    errors: ["Use 本を読んでいました to express that the reading was in progress."],
+  };
+  const replies = [wrong, partial];
+  const submissions = ["家にテレビを見ました。", "家で本を読みました。"];
+  const attempted = [2, 1];
+  let entries = 0;
+  const result = await runQuestions([question], {
+    async answer({ attempts, failure }) {
+      assert.equal(failure, "");
+      assert.equal(attempts.length, entries);
+      assert.ok(entries < submissions.length, "a partially correct answer should end the question");
+      if (entries === 1) assert.deepEqual(attempts[0].grade, wrong);
+      return { action: "submit", answer: submissions[entries++] };
+    },
+    grade(item, answer, remaining) {
+      return gradeAnswer(async ({ systemPrompt, data }) => {
+        assert.equal(remaining, attempted.shift());
+        assert.deepEqual(data, { ...question, answer, attemptsRemainingAfterSubmission: remaining });
+        assert.match(systemPrompt, /withholding the complete reference translation/);
+        return { stop: "stop", text: JSON.stringify(replies.shift()) };
+      }, item, answer, remaining);
+    },
+    async reveal(item, outcome, grade, answer) {
+      assert.equal(item.referenceJa, question.referenceJa);
+      assert.equal(outcome, "partially_correct");
+      assert.deepEqual(grade, partial);
+      assert.equal(answer, submissions[1]);
+      return true;
+    },
+  });
+  assert.equal(result.completed, true);
+  assert.equal(result.records[0].attempts.length, 2);
 });
 
 test("reference explanation uses an isolated payload without the learner's answers", async () => {

@@ -14,10 +14,24 @@ async function anki<T>(action: string, params: object, signal?: AbortSignal): Pr
   return data.result;
 }
 
-export async function loadAnkiVocabulary(signal?: AbortSignal) {
-  const ids = await anki<number[]>("findCards", { query }, signal);
+export async function loadAnkiVocabulary(signal?: AbortSignal, reviewHistory = false, includeLearning = reviewHistory) {
+  const search = includeLearning ? query.replace("is:review -is:learn", "(is:review OR is:learn)") : query;
+  const ids = await anki<number[]>("findCards", { query: search }, signal);
   if (!Array.isArray(ids) || !ids.length || !ids.every(Number.isSafeInteger)) {
     throw new Error("Core 2000 returned no eligible cards or returned invalid card IDs.");
+  }
+  const reviewed = new Map<number, number>();
+  if (reviewHistory) {
+    const candidates = ids;
+    for (let i = 0; i < candidates.length; i += 200) {
+      const cards = candidates.slice(i, i + 200);
+      const history = await anki<Record<string, {id: number; ease: number}[]>>("getReviewsOfCards", { cards }, signal);
+      for (const card of cards) {
+        const latest = (history[String(card)] ?? []).reduce((max, row) =>
+          row.ease >= 1 && row.ease <= 4 && Number.isSafeInteger(row.id) ? Math.max(max, row.id) : max, 0);
+        if (latest) reviewed.set(card, latest);
+      }
+    }
   }
   const entries: AnkiEntry[] = [];
   for (let i = 0; i < ids.length; i += 200) {
@@ -36,7 +50,7 @@ export async function loadAnkiVocabulary(signal?: AbortSignal) {
       const reading = cleanField(card.fields["Vocabulary-Kana"]?.value);
       const meaning = cleanField(card.fields["Vocabulary-English"]?.value);
       const example = cleanField(card.fields.Expression?.value);
-      entries.push({ headword: word, reading, meaning, pos, mature: card.interval >= 21,
+      entries.push({ headword: word, reading, meaning, pos, mature: card.interval >= 21, reviewedAt: reviewed.get(card.cardId),
         exampleJa: example && example.length <= 100 ? example : undefined });
     }
   }

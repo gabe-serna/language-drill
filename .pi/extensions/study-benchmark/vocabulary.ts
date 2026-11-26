@@ -1,13 +1,15 @@
+import type { Recent } from "./grammar.ts";
 import { coverage, type VocabularyGate, type Token } from "./generation.ts";
 import { randomUUID } from "node:crypto";
 import { open, readFile, rename, unlink } from "node:fs/promises";
 
 export type Entry = { headword: string; reading: string; meaning: string };
-export type AnkiEntry = Entry & { pos: string; mature: boolean; exampleJa?: string };
+export type AnkiEntry = Entry & { pos: string; mature: boolean; reviewedAt?: number; exampleJa?: string };
 type VocabularyEntry = Entry & {
   sources: ("anki" | "foundational")[];
   pos?: string;
   mature?: boolean;
+  reviewedAt?: number;
   exampleJa?: string;
 };
 
@@ -129,6 +131,7 @@ export function mergeVocabulary(anki: AnkiEntry[], foundational: Entry[]) {
     const existing = merged.get(key);
     if (existing) {
       existing.mature ||= value.mature;
+      existing.reviewedAt = Math.max(existing.reviewedAt ?? 0, value.reviewedAt ?? 0) || undefined;
       existing.exampleJa ??= value.exampleJa;
     } else merged.set(key, { ...value, sources: ["anki"] });
   }
@@ -155,7 +158,13 @@ export async function indexKnownExamples(entries: VocabularyEntry[], gate: Vocab
   return index;
 }
 
-export function selectPracticeVocabulary(entries: VocabularyEntry[], seed: number, examples: Map<string, string[]>) {
+export function recencyWeight(reviewedAt: number | undefined, recent: Recent, now: number) {
+  if (reviewedAt === undefined) return 1;
+  const age = Math.max(0, now - reviewedAt) / 86_400_000;
+  return 1 + recent.boost * Math.max(0, 1 - age / recent.windowDays);
+}
+
+export function selectPracticeVocabulary(entries: VocabularyEntry[], seed: number, examples: Map<string, string[]>, recent?: Recent, now = Date.now()) {
   let state = seed;
   const shuffle = <T>(items: T[]) => {
     for (let i = items.length - 1; i > 0; i--) {
@@ -165,12 +174,20 @@ export function selectPracticeVocabulary(entries: VocabularyEntry[], seed: numbe
     }
     return items;
   };
+  const recency = new Map<string, number>();
+  if (recent) for (const item of entries) {
+    recency.set(item.headword, Math.max(recency.get(item.headword) ?? 1, recencyWeight(item.reviewedAt, recent, now)));
+  }
   const sample = new Set<string>();
   const shuffledForms: string[] = [];
   for (const [pos, quota] of Object.entries(quotas)) {
-    const forms = [...new Set(entries.filter(item => item.pos === pos && item.mature)
+    const forms = [...new Set(entries.filter(item => item.pos === pos && (recent ? item.sources.includes("anki") : item.mature))
       .map(item => item.headword))].sort();
-    const selected = shuffle(forms).slice(0, quota);
+    const ranked = recent ? forms.map(word => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return { word, score: -Math.log((state + 1) / 4294967297) / (recency.get(word) ?? 1) };
+    }).sort((a, b) => a.score - b.score).map(item => item.word) : shuffle(forms);
+    const selected = ranked.slice(0, quota);
     for (const word of selected) sample.add(word);
     shuffledForms.push(...selected);
   }

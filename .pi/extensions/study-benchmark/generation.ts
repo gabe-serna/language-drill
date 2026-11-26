@@ -1,4 +1,21 @@
-import { studyGrammar } from "./session.ts";
+import { guidance, levels, type Difficulty, type GrammarEntry } from "./grammar.ts";
+const politePast = "polite-past";
+type GrammarPlan = { difficulty: Difficulty; entries: GrammarEntry[]; targets: string[] };
+
+function isGrammarToken(token: Token, tokens: Token[], enabled: Set<string>) {
+  const [surface, lemma, pos, oov, start, end, subtype] = token;
+  if (oov) return false;
+  const index = tokens.indexOf(token);
+  const prior = tokens[index - 1];
+  const next = tokens[index + 1];
+  const followsTe = prior?.[5] === start && prior[6] === "接続助詞" && /^[てで]$/.test(prior[0]);
+  return (enabled.has("te-imperative-request") && followsTe && surface === "ください" && lemma === "くださる")
+    || (enabled.has("past-progressive") && followsTe && lemma === "いる" && subtype === "非自立可能")
+    || (enabled.has("reported-instruction") && (
+      (surface === "よう" && subtype === "助動詞語幹" && next?.[4] === end && next[0] === "に")
+      || (lemma === "れる" && pos === "助動詞" && prior?.[5] === start && prior[1] === "言う")))
+    || (enabled.has("contrast") && surface === "けど" && subtype === "接続助詞");
+}
 const particles = new Set("は が を に で へ と も の から まで より や か て ば よ ね".split(" "));
 const auxiliaries = new Set("ます た ない だ です ぬ".split(" "));
 const punctuation = new Set("。、「」！？!?.,　 ");
@@ -98,7 +115,7 @@ export type Inference = (request: { systemPrompt: string; data: object; maxToken
   Promise<{ text: string; stop: string }>;
 export type ReviewExercise = Candidate & { english: string; verifiedPolitePastVerb?: string; unconfirmedLemmas?: string[] };
 type Word = { lemma: string; reading: string; meaning: string };
-type Decision = { accepted: boolean; reason: string; problemWords: string[]; words: Word[] };
+type Decision = { accepted: boolean; reason: string; problemWords: string[]; words: Word[]; grammarIds?: string[] };
 type RejectCounts = Record<string, number>;
 
 function count(counts: RejectCounts, reason: string) {
@@ -112,9 +129,9 @@ type Diagnostic = (message: string) => void;
 function issue(report: Diagnostic | undefined, path: string, expected: string, received: unknown, reason: string) {
   report?.(`${path}: expected ${expected}; received ${JSON.stringify(received) ?? "<missing>"}; ${reason}`);
 }
-async function request(infer: Inference, systemPrompt: string, data: object, report?: Diagnostic) {
+async function request(infer: Inference, systemPrompt: string, data: object, report?: Diagnostic, maxTokens = 850) {
   const start = Date.now();
-  const reply = await infer({ systemPrompt, data, maxTokens: 850 });
+  const reply = await infer({ systemPrompt, data, maxTokens });
   const ms = Date.now() - start;
   if (reply.stop !== "stop") {
     issue(report, "stopReason", '"stop"', reply.stop, reply.stop === "length" ? "inference truncated at token limit" : "inference incomplete");
@@ -130,11 +147,17 @@ async function request(infer: Inference, systemPrompt: string, data: object, rep
   }
 }
 
-export async function validateBatch(exercises: ReviewExercise[], infer: Inference, report?: Diagnostic) {
-  const response = await request(infer, reviewerPrompt, {
+export async function validateBatch(exercises: ReviewExercise[], infer: Inference, report?: Diagnostic, grammar?: GrammarPlan) {
+  const prompt = grammar ? reviewerPrompt.replace(/Apply the polite-past requirement.*?yourself\./,
+    "Apply the supplied grammar plan to the sentence. Assess difficulty from grammar and structure alone. Reject out-of-scope grammar or a mismatched difficulty. Begin the rejection reason with Unexpected grammar: only for Japanese constructions outside the enabled inventory. Name the construction. Normal inflection and function words supporting the enabled patterns are allowed. For accepted items include grammarIds listing the applicable inventory IDs, including a target, and difficulty with the assessed tier.")
+    .replace(/Example: .+$/, "Example accepted decision: " + JSON.stringify({ decisions: [{
+      id: "1", accepted: true, grammarIds: [grammar.targets[0]], difficulty: grammar.difficulty,
+    }] })) : reviewerPrompt;
+  const response = await request(infer, prompt, {
+    ...(grammar ? { grammar: { ...grammar, guidance: guidance[grammar.difficulty] } } : {}),
     exercises: exercises.map(({ id, referenceJa, english, targetGrammarId, verifiedPolitePastVerb, unconfirmedLemmas }) =>
       ({ id, referenceJa, english, targetGrammarId, ...(unconfirmedLemmas?.length ? { unconfirmedLemmas } : {}), ...(verifiedPolitePastVerb ? { verifiedPolitePastVerb } : {}) })),
-  }, report);
+  }, report, grammar ? 2048 : 850);
   const failure = (error: string) => ({ ms: response.ms, error, decisions: new Map<string, Decision>() });
   if (response.error) return failure(response.error);
   const values = response.value?.decisions;
@@ -170,7 +193,18 @@ export async function validateBatch(exercises: ReviewExercise[], infer: Inferenc
       decisions.set(id, { accepted: false, reason: "invalid word metadata", problemWords: [], words: [] });
       continue;
     }
-    decisions.set(id, { accepted: item.accepted, reason: item.accepted ? "" : item.reason.trim(), problemWords, words });
+    const grammarIds = item.grammarIds;
+    if (grammar && item.accepted && (!Array.isArray(grammarIds) ||
+      !grammarIds.every(id => grammar.entries.some(entry => entry.id === id)) ||
+      !grammarIds.some(id => grammar.targets.includes(id)) || item.difficulty !== grammar.difficulty)) {
+      const reason = !Array.isArray(grammarIds) ? "Reviewer omitted grammar IDs" :
+        item.difficulty !== grammar.difficulty ? "Reviewer difficulty mismatch or missing tier" :
+        "Reviewer grammar IDs outside allowed coverage or missing target";
+      issue(report, "$.decisions[" + i + "]", "accepted decision with allowed grammar IDs and the requested difficulty", item, reason);
+      decisions.set(id, { accepted: false, reason, problemWords: [], words: [] });
+      continue;
+    }
+    decisions.set(id, { grammarIds: grammar && item.accepted ? [...new Set<string>(grammarIds)] : undefined, accepted: item.accepted, reason: item.accepted ? "" : item.reason.trim(), problemWords, words });
   }
   return { ms: response.ms, decisions, error: undefined };
 }
@@ -213,6 +247,8 @@ export function expansionCapacity(knownCount: number, percent: number, size = 10
 }
 type TrialOptions = {
   size?: number;
+  difficulty?: Difficulty;
+  grammarEntries?: GrammarEntry[];
   previous?: ReviewExercise[];
   expansionPolicy?: ExpansionPolicy;
   vocabulary: { headword: string; reading: string; meaning: string; pos?: string; exampleJa?: string }[];
@@ -256,7 +292,7 @@ function sentenceUsage(tokens: Token[], contentWords: string[]) {
 }
 
 type Usage = ReturnType<typeof sentenceUsage>;
-type AcceptedExercise = ReviewExercise & { used: string[]; usage: Usage; words?: Word[] };
+export type AcceptedExercise = ReviewExercise & { used: string[]; usage: Usage; words?: Word[]; difficulty?: Difficulty; grammarIds?: string[] };
 
 function nearDuplicate(a: Usage, b: Usage) {
   if (a.slots.length < 2 || a.slots.length !== b.slots.length) return false;
@@ -286,7 +322,14 @@ function summarizeUsage(exercises: AcceptedExercise[]) {
   };
 }
 
-export async function generateTrial({ vocabulary, targets, gate, analyze, infer, onCall, report, size = 10, previous = [], expansionPolicy = { maxPercent: 20, maxWordsPerExercise: 1 } }: TrialOptions) {
+export async function generateTrial({ vocabulary, targets, gate, analyze, infer, onCall, report, size = 10, previous = [], difficulty, grammarEntries = [], expansionPolicy = { maxPercent: 20, maxWordsPerExercise: 1 } }: TrialOptions) {
+  const entries = difficulty ? grammarEntries.filter(entry => entry.enabled && levels.indexOf(entry.difficulty) <= levels.indexOf(difficulty)) : [];
+  const eligibleTargets = entries.filter(entry => !entry.supportingOnly);
+  if (difficulty && !eligibleTargets.length) throw new Error("Enable grammar suitable for " + difficulty + " in data/grammar.json.");
+  const atLevel = eligibleTargets.filter(entry => entry.difficulty === difficulty);
+  const grammar = difficulty ? { difficulty, entries, targets: (atLevel.length ? atLevel : eligibleTargets).map(entry => entry.id) } : undefined;
+  const enabledGrammar = new Set(entries.map(entry => entry.id));
+  const generationPrompt = grammar ? authorPrompt.replace(/with a polite-past main verb ending in .*?\. Follow/, "using only enabled grammar from the supplied inventory. Use at least one target construction and follow the difficulty guidance. Difficulty comes from grammar and structure. Keep vocabulary familiar and the phrasing natural. Follow") : authorPrompt;
   const { maxPercent, maxWordsPerExercise } = expansionPolicy;
   if (!Number.isInteger(maxPercent) || maxPercent < 0 || maxPercent > 100 || !Number.isSafeInteger(maxWordsPerExercise) || maxWordsPerExercise < 0)
     throw new Error("Expansion policy requires integer maxPercent (0–100) and nonnegative integer maxWordsPerExercise.");
@@ -311,8 +354,8 @@ export async function generateTrial({ vocabulary, targets, gate, analyze, infer,
     }).sort((a, b) => (targetProblems.get(a)?.length ?? 0) - (targetProblems.get(b)?.length ?? 0));
     const usage = summarizeUsage(accepted);
     onCall?.("generation", attempt);
-    const authored = await request(infer, authorPrompt, {
-      count: requested, expansionPolicy, grammar: studyGrammar[0], preferredTargets, vocabulary,
+    const authored = await request(infer, generationPrompt, {
+      count: requested, expansionPolicy, grammar: grammar ? { ...grammar, guidance: guidance[grammar.difficulty] } : politePast, preferredTargets, vocabulary,
       ...(accepted.length ? { diversity: {
         coveredContent: usage.coveredContent.slice(0, 20),
         repeatedContent: usage.repeatedContent.slice(0, 5),
@@ -320,8 +363,9 @@ export async function generateTrial({ vocabulary, targets, gate, analyze, infer,
         repeatedPatterns: usage.repeatedPatterns.slice(0, 3),
       } } : {}),
       ...(formatFeedback.size ? { formatFeedback: [...formatFeedback] } : {}),
-      priorAccepted: [...accepted, ...pending].map(item => item.referenceJa), priorRejected: [...rejected.values()],
-    }, report);
+      priorAccepted: [...previous.slice(-10), ...accepted, ...pending].map(item => item.referenceJa),
+      priorRejected: [...rejected.values()],
+    }, report, grammar ? 3072 : 850);
     formatFeedback = new Set();
     const deterministicRejections: RejectCounts = Object.create(null);
     const translationRejections: RejectCounts = Object.create(null);
@@ -355,7 +399,7 @@ export async function generateTrial({ vocabulary, targets, gate, analyze, infer,
         formatFeedback.add("Each sentences entry must be a nonblank string under 200 characters.");
         return [];
       }
-      return [{ id: String((attempt - 1) * 10 + index + 1), targetGrammarId: studyGrammar[0], referenceJa: value.normalize("NFC").trim() }];
+      return [{ id: String((attempt - 1) * 10 + index + 1), targetGrammarId: grammar?.targets.join(", ") ?? politePast, referenceJa: value.normalize("NFC").trim() }];
     });
     const analyses = candidates.length ? await analyze(candidates.map(item => item.referenceJa)) : [];
     const survivors = [];
@@ -372,14 +416,16 @@ export async function generateTrial({ vocabulary, targets, gate, analyze, infer,
       const lemmas = new Set<string>();
       const { unknown, used } = coverage(item.referenceJa, tokens, gate, (word, pos) => {
         if (contentParts.has(pos)) contentWords.push(word);
-      }, ([surface, lemma, pos, oov, , , subtype]) => {
+      }, token => {
+        if (enabledGrammar.size && isGrammarToken(token, tokens, enabledGrammar)) return true;
+        const [surface, lemma, pos, oov, , , subtype] = token;
         if (oov || !subtype || subtype === "固有名詞" || subtype === "数詞" || !contentParts.has(pos)) return false;
         if (!/[ぁ-ゖァ-ヺ一-龯]/u.test(surface)) return false;
         lemmas.add(lemma);
         contentWords.push(lemma);
         return true;
       });
-      if (item.targetGrammarId !== studyGrammar[0] || !/(ました|ませんでした)$/.test(key)) {
+      if (item.targetGrammarId !== politePast || !/(ました|ませんでした)$/.test(key)) {
         block(item, "expected a polite-past verb ending in ました or ませんでした", deterministicRejections);
       } else if (!unknown.length && !used.length && !lemmas.size) {
         block(item, "no lexical item", deterministicRejections);
@@ -420,14 +466,15 @@ export async function generateTrial({ vocabulary, targets, gate, analyze, infer,
     let aiAccepted = 0;
     if (pairs.length) {
       onCall?.("validation", attempt);
-      const review = await validateBatch(pairs, infer, report);
+      const review = await validateBatch(pairs, infer, report, grammar);
       validationMs = review.ms;
       for (const item of pairs) {
         const decision = review.decisions.get(item.id);
         if (decision?.accepted) {
           aiAccepted++;
-          if (decision.words.length) pending.push({ ...item, words: decision.words });
-          else accepted.push(item);
+          const exercise = { ...item, difficulty, grammarIds: decision.grammarIds };
+          if (decision.words.length) pending.push({ ...exercise, words: decision.words });
+          else accepted.push(exercise);
           seenEnglish.add(englishKey(item.english));
         } else {
           block(item, review.error ? "review unavailable: " + review.error : decision?.reason ?? "missing decision", aiRejections);
@@ -460,6 +507,12 @@ export async function generateTrial({ vocabulary, targets, gate, analyze, infer,
   const targetUses = Object.fromEntries(targets.map(target =>
     [target, accepted.filter(item => item.used.includes(target)).length]));
   const uniqueVocabulary = new Set(accepted.flatMap(item => item.used)).size;
-  return { accepted, expansionLimitRejections: pending.length, calls, uniqueVocabulary, usage: summarizeUsage(accepted), targetUses, abandonedTargets: [...abandonedTargets] };
+  return { accepted, pending: pending.slice(0, size - accepted.length), expansionLimitRejections: pending.length, calls, uniqueVocabulary, usage: summarizeUsage(accepted), targetUses, abandonedTargets: [...abandonedTargets] };
 }
 
+
+export function finalizeExpansion(accepted: AcceptedExercise[], deferred: AcceptedExercise[], maxPercent: number, size: number) {
+  const expanded = accepted.filter(question => question.words?.length).length;
+  const spare = expansionCapacity(accepted.length - expanded, maxPercent, size) - expanded;
+  return [...accepted, ...deferred.slice(0, Math.max(0, spare))];
+}
