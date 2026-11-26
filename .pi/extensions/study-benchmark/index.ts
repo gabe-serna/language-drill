@@ -1,68 +1,33 @@
-import { allocate, levels, loadGrammar, shuffle } from "./grammar.ts";
-import { voicevox, sessionAudio, type Settings } from "./voicevox.ts";
+import { allocate, levels } from "../../../src/core/grammar.ts";
+import { voicevox, type Settings } from "../../../src/adapters/voicevox.ts";
 import { wrapTextWithAnsi, matchesKey } from "@earendil-works/pi-tui";
-import { gradeAnswer, explainAnswer, type Grade } from "./grading.ts";
-import { spawn } from "node:child_process";
+import { gradeAnswer, explainAnswer, type Grade } from "../../../src/core/grading.ts";
+import { inference, type InferenceTrace } from "./inference.ts";
+import { loadGrammar } from "../../../src/adapters/config.ts";
+import { analyze } from "../../../src/adapters/sudachi.ts";
+import { sessionAudio } from "../../../src/core/audio.ts";
+import { playWave } from "../../../src/adapters/windows-playback.ts";
+import { prepareQuestions } from "../../../src/core/prepare.ts";
+import { studyCommand, studyCompletions } from "./commands.ts";
+import { readFoundationalVocabulary } from "../../../src/adapters/foundational.ts";
 import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import { buildVocabularyGate, finalizeExpansion, generateTrial, translateBatch, validateBatch, type Inference, type Token } from "./generation.ts";
-import { indexKnownExamples, mergeVocabulary, readFoundationalVocabulary, selectPracticeVocabulary } from "./vocabulary.ts";
-import { loadAnkiVocabulary } from "./anki.ts";
+import { buildVocabularyGate, finalizeExpansion, generateTrial, translateBatch, validateBatch } from "../../../src/core/generation.ts";
+import { indexKnownExamples, mergeVocabulary, selectPracticeVocabulary } from "../../../src/core/vocabulary.ts";
+import { loadAnkiVocabulary } from "../../../src/adapters/anki.ts";
 import { translationCases, validatorCases } from "./validator-cases.ts";
 
-import { studyCommand, studyCompletions, runQuestions } from "./session.ts";
-
-function deadline(ms: number, signal?: AbortSignal) {
-  const timeout = AbortSignal.timeout(ms);
-  return signal ? AbortSignal.any([signal, timeout]) : timeout;
-}
+import { runQuestions } from "../../../src/core/session.ts";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
-const analyzer = fileURLToPath(new URL("./analyze.py", import.meta.url));
 const foundationalPath = join(root, "data", "foundational-vocabulary.json");
-function analyze(lines: string[], signal?: AbortSignal): Promise<Token[][]> {
-  return new Promise((resolve, reject) => {
-    const python = join(root, ".venv", "Scripts", "python.exe");
-    const proc = spawn(python, [analyzer], {
-      windowsHide: true, signal: deadline(10_000, signal), stdio: ["pipe", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    proc.stdout.setEncoding("utf8").on("data", data => { stdout += data; });
-    proc.stderr.setEncoding("utf8").on("data", data => { stderr += data; });
-    proc.on("error", reject);
-    proc.stdin.on("error", reject);
-    proc.on("close", code => {
-      try {
-        if (code !== 0) throw new Error("Sudachi failed: " + stderr.trim().slice(0, 250));
-        const result = JSON.parse(stdout) as Token[][];
-        if (!Array.isArray(result) || result.length !== lines.length) throw new Error("Invalid Sudachi result");
-        resolve(result);
-      } catch (error) { reject(error); }
-    });
-    proc.stdin.end(JSON.stringify(lines), "utf8");
-  });
-}
-
 const seconds = (ms: number) => (ms / 1000).toFixed(2) + " s";
 const rate = (passed: number, total: number) => total ? `${passed}/${total} (${(100 * passed / total).toFixed(1)}%)` : "n/a (0 candidates)";
 const visibleText = (text: string) => text.replace(/[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f-\x9f]/g,
   char => "\\u" + char.charCodeAt(0).toString(16).padStart(4, "0"));
-
-type InferenceTrace = {
-  label: string;
-  model: string;
-  systemPrompt: string;
-  userMessage: string;
-  maxTokens: number;
-  text?: string;
-  diagnostics?: string[];
-  stop?: string;
-  error?: string;
-};
 
 function formatDebug(traces: InferenceTrace[]) {
   if (!traces.length) return "";
@@ -75,33 +40,6 @@ function formatDebug(traces: InferenceTrace[]) {
     "Full user message:", trace.userMessage,
     "Raw model response:", trace.text || "(no model text)",
   ].join("\n"))).join("\n\n");
-}
-
-function inference(ctx: ExtensionCommandContext, signal?: AbortSignal, traces?: InferenceTrace[], label = () => "study"): Inference {
-  return async ({ systemPrompt, data, maxTokens }) => {
-    const model = ctx.model;
-    if (!model) throw new Error("Pi no longer has a selected model.");
-    const userMessage = JSON.stringify(data);
-    const trace: InferenceTrace | undefined = traces ? { label: label(), model: model.id, systemPrompt, userMessage, maxTokens } : undefined;
-    if (trace) traces?.push(trace);
-    const entries = ctx.sessionManager.getEntries().length;
-    const requestSignal = deadline(45_000, signal);
-    const reply = await ctx.modelRegistry.streamSimple(model, {
-      systemPrompt,
-      messages: [{ role: "user", timestamp: Date.now(), content: userMessage }],
-    }, { signal: requestSignal, maxTokens }).result().catch(error => {
-      if (trace) trace.error = error instanceof Error ? error.message : String(error);
-      requestSignal.throwIfAborted();
-      throw error;
-    });
-    const text = reply.content.filter(block => block.type === "text").map(block => block.text).join("");
-    if (trace) Object.assign(trace, { text, stop: reply.stopReason, error: reply.errorMessage });
-    requestSignal.throwIfAborted();
-    if (entries !== ctx.sessionManager.getEntries().length) {
-      throw new Error("Pi session entries changed during an isolated model request.");
-    }
-    return { text, stop: reply.stopReason };
-  };
 }
 
 export default function (pi: ExtensionAPI) {
@@ -153,30 +91,13 @@ export default function (pi: ExtensionAPI) {
         }
         const { count: requested, difficulty, recent } = options;
         const questions = await prepare("Preparing exercises (Esc to exit)", async () => {
-          const tokenize = (lines: string[]) => analyze(lines, signal);
-          const gate = await buildVocabularyGate(new Set(entries.map(item => item.headword)), tokenize);
-          const examples = await indexKnownExamples(entries, gate, tokenize);
-          const expansionPolicy = JSON.parse(readFileSync(join(root, "data", "vocabulary-expansion.json"), "utf8"));
-          const accepted: Awaited<ReturnType<typeof generateTrial>>["accepted"] = [];
-          const deferred: typeof accepted = [];
-          const seed = Date.now();
-          for (const tier of allocate(requested, catalog.distribution, difficulty)) {
-            for (let remaining = tier.count; remaining > 0;) {
-              signal.throwIfAborted();
-              const size = Math.min(10, remaining);
-              const sample = selectPracticeVocabulary(entries, seed + accepted.length, examples, recent ? catalog.recent : undefined);
-              const result = await generateTrial({ ...sample, size, difficulty: tier.difficulty, grammarEntries: catalog.entries,
-                previous: [...accepted, ...deferred], gate, analyze: tokenize, expansionPolicy, infer: inference(ctx, signal), onCall(stage, attempt) {
-                  signal.throwIfAborted();
-                  ctx.ui.setStatus("study", `Prepared ${accepted.length}/${requested} | ${tier.difficulty} | ${stage} | attempt ${attempt}/3`);
-                } });
-              accepted.push(...result.accepted);
-              deferred.push(...result.pending);
-              remaining -= size;
-            }
-          }
-          const questions = finalizeExpansion(accepted, deferred, expansionPolicy.maxPercent, requested);
-          return difficulty ? questions : shuffle(questions);
+          return prepareQuestions({ entries, catalog, requested, difficulty, recent, signal,
+            tokenize: lines => analyze(lines, signal), infer: inference(ctx, signal),
+            expansionPolicy: JSON.parse(readFileSync(join(root, "data", "vocabulary-expansion.json"), "utf8")),
+            onProgress(prepared, tier, stage, attempt) {
+              ctx.ui.setStatus("study", `Prepared ${prepared}/${requested} | ${tier} | ${stage} | attempt ${attempt}/3`);
+            },
+          });
         });
         ctx.ui.setStatus("study", undefined);
         if (questions.length < requested) ctx.ui.notify(`Prepared ${questions.length} of ${requested} requested exercises within the retry limit.`, "warning");
@@ -188,7 +109,7 @@ export default function (pi: ExtensionAPI) {
         try {
           const settings: Settings = JSON.parse(readFileSync(join(root, "data", "voicevox.json"), "utf8"));
           const synthesize = voicevox(settings);
-          if (settings.enabled) audio = sessionAudio(synthesize);
+          if (settings.enabled) audio = sessionAudio(synthesize, playWave);
           autoPlay = settings.autoPlay;
         } catch { ctx.ui.notify("Reference audio unavailable. Check data/voicevox.json.", "warning"); }
         const result = await runQuestions(questions, {

@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-
 export const levels = ["easy", "medium", "hard"] as const;
 export type Difficulty = typeof levels[number];
 export type GrammarEntry = {
@@ -8,6 +6,7 @@ export type GrammarEntry = {
 };
 export type Recent = { windowDays: number; boost: number };
 type Distribution = Record<Difficulty, number>;
+export type GrammarCatalog = { entries: GrammarEntry[]; distribution: Distribution; recent: Recent };
 
 export const guidance: Record<Difficulty, string> = {
   easy: "One straightforward action or state with simple modifiers. A basic past action at a place and time can still be easy.",
@@ -15,8 +14,8 @@ export const guidance: Record<Difficulty, string> = {
   hard: "Combine multiple grammatical or structural concepts. Use contrasting events if enabled, or encode multiple interacting relationships within one clause, such as a precise time, route from a source to a destination, companion and action. Naturalness and clarity take priority over length.",
 };
 
-export function loadGrammar(path: string) {
-  const data = JSON.parse(readFileSync(path, "utf8").replace(/^\uFEFF/, ""));
+export function parseGrammar(json: string): GrammarCatalog {
+  const data = JSON.parse(json.replace(/^\uFEFF/, ""));
   const text = (value: unknown) => typeof value === "string" && !!value.trim();
   const list = (value: unknown) => Array.isArray(value) && value.length > 0 && value.every(text);
   const entries: GrammarEntry[] = data?.entries;

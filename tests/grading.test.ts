@@ -1,7 +1,14 @@
 ﻿import assert from "node:assert/strict";
 import { test } from "node:test";
-import { explainAnswer, gradeAnswer } from "./grading.ts";
-import { runQuestions } from "./session.ts";
+import { explainAnswer, gradeAnswer } from "../src/core/grading.ts";
+import { runQuestions } from "../src/core/session.ts";
+import { requestInference } from "../src/core/inference.ts";
+
+test("provider contract rejects invalid token budgets and malformed reply envelopes", async () => {
+  const request = { systemPrompt: "Grade", data: {}, maxTokens: 1 };
+  await assert.rejects(requestInference(async () => assert.fail("unexpected inference"), { ...request, maxTokens: 0 }), /Invalid inference request/);
+  await assert.rejects(requestInference(async () => ({ text: "{}", stop: "" }), request), /Invalid inference response/);
+});
 
 const question = { english: "I was reading a book at home.", referenceJa: "家で本を読んでいました。" };
 const fixtures = [

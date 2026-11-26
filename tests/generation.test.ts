@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { analyze } from "../src/adapters/sudachi.ts";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
-import { buildVocabularyGate, coverage, generateTrial, politePastVerb, translateBatch, validateBatch, type Inference, type ReviewExercise, type Token } from "./generation.ts";
-import { validatorCases } from "./validator-cases.ts";
+import { buildVocabularyGate, coverage, generateTrial, politePastVerb, translateBatch, validateBatch, type ReviewExercise, type Token } from "../src/core/generation.ts";
+import type { Inference } from "../src/core/inference.ts";
+import { validatorCases } from "../.pi/extensions/study-benchmark/validator-cases.ts";
 
 const reply = (body: unknown) => ({ text: JSON.stringify(body), stop: "stop" });
 
@@ -140,16 +140,6 @@ test("known inflections and exact fixed expressions pass without licensing their
   assert.deepEqual(coverage("きました", [["き", "くる", "動詞", false, 0, 1],
     ["まし", "ます", "助動詞", false, 1, 3], ["た", "た", "助動詞", false, 3, 4]], gate).unknown, ["き"]);
 });
-
-const analyze = async (lines: string[]): Promise<Token[][]> => {
-  const python = fileURLToPath(new URL("../../../.venv/Scripts/python.exe", import.meta.url));
-  const script = fileURLToPath(new URL("./analyze.py", import.meta.url));
-  const result = spawnSync(python, [script], {
-    input: JSON.stringify(lines), encoding: "utf8", windowsHide: true, timeout: 10_000,
-  });
-  assert.equal(result.status, 0, result.stderr || result.error?.message);
-  return JSON.parse(result.stdout);
-};
 
 test("pinned Sudachi distinguishes conjugated lemmas, alternate spellings and fixed expressions", async () => {
   const gate = await buildVocabularyGate(new Set(["来る", "探す", "気をつけて"]), analyze);

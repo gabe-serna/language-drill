@@ -1,4 +1,4 @@
-import type { Inference } from "./generation.ts";
+import { requestInference, type Inference } from "./inference.ts";
 
 export type Question = { english: string; referenceJa: string };
 export type Grade = {
@@ -26,7 +26,7 @@ const explanationPrompt = [
 ].join("\n");
 
 async function readResult(infer: Inference, systemPrompt: string, data: object) {
-  const result = await infer({ systemPrompt, data, maxTokens: systemPrompt === gradingPrompt ? 2048 : 850 });
+  const result = await requestInference(infer, { systemPrompt, data, maxTokens: systemPrompt === gradingPrompt ? 2048 : 850 });
   if (result.stop !== "stop") throw new Error("The model response did not finish (" + result.stop + ").");
   const text = result.text.trim();
   const fenced = /^```(?:json)?[ \t]*\r?\n([\s\S]+)\r?\n```$/i.exec(text);

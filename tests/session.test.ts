@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { runQuestions, studyCommand, studyCompletions } from "./session.ts";
+import { runQuestions } from "../src/core/session.ts";
+import { studyCommand, studyCompletions } from "../.pi/extensions/study-benchmark/commands.ts";
 
 test("study menu, count, and completion", () => {
   assert.equal(studyCommand(""), undefined);

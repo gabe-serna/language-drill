@@ -3,10 +3,11 @@ import { test } from "node:test";
 import { mkdtempSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { allocate, loadGrammar } from "./grammar.ts";
-import { recencyWeight, mergeVocabulary, selectPracticeVocabulary } from "./vocabulary.ts";
-import { studyCommand, studyCompletions } from "./session.ts";
-import { finalizeExpansion, validateBatch, type AcceptedExercise } from "./generation.ts";
+import { loadGrammar } from "../src/adapters/config.ts";
+import { allocate } from "../src/core/grammar.ts";
+import { recencyWeight, mergeVocabulary, selectPracticeVocabulary } from "../src/core/vocabulary.ts";
+import { studyCommand, studyCompletions } from "../.pi/extensions/study-benchmark/commands.ts";
+import { finalizeExpansion, validateBatch, type AcceptedExercise } from "../src/core/generation.ts";
 
 const path = "data/grammar.json";
 const config = loadGrammar(path);

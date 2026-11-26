@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
-  addFoundationalEntry, entryKey, mergeVocabulary, readFoundationalVocabulary,
-  removeFoundationalEntry, selectPracticeVocabulary, updateFoundationalEntry,
-} from "./vocabulary.ts";
+  addFoundationalEntry, readFoundationalVocabulary, removeFoundationalEntry, updateFoundationalEntry,
+} from "../src/adapters/foundational.ts";
+import { entryKey, mergeVocabulary, selectPracticeVocabulary } from "../src/core/vocabulary.ts";
 
 const metal = { headword: "金", reading: "きん", meaning: "gold" };
 const money = { headword: "金", reading: "かね", meaning: "money" };
@@ -61,7 +61,7 @@ test("grounded adjective adds only known supporting words to the sample", async 
     { headword: "見る", reading: "", meaning: "see", mature: false, pos: "Verb" },
     { headword: "可", reading: "", meaning: "permitted", mature: true, pos: "Noun", exampleJa: "学生可" },
   ], []);
-  const { indexKnownExamples } = await import("./vocabulary.ts");
+  const { indexKnownExamples } = await import("../src/core/vocabulary.ts");
   const index = await indexKnownExamples(entries, { known: new Set(entries.map(entry => entry.headword)), expressions: new Map() },
     async () => [[["赤い", "赤い", "形容詞", false, 0, 2], ["車", "車", "名詞", false, 2, 3],
       ["を", "を", "助詞", false, 3, 4], ["見", "見る", "動詞", false, 4, 5],

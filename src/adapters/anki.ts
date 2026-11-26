@@ -1,4 +1,4 @@
-import type { AnkiEntry } from "./vocabulary.ts";
+import type { AnkiEntry } from "../core/vocabulary.ts";
 
 const query = 'deck:"Core 2000" is:review -is:learn -is:suspended';
 type Card = { cardId: number; interval: number; fields: Record<string, {value: string}> };
@@ -37,7 +37,7 @@ export async function loadAnkiVocabulary(signal?: AbortSignal, reviewHistory = f
   for (let i = 0; i < ids.length; i += 200) {
     const chunk = ids.slice(i, i + 200);
     const cards = await anki<Card[]>("cardsInfo", { cards: chunk }, signal);
-    if (!Array.isArray(cards) || new Set(cards.map(card => card.cardId)).size !== chunk.length
+    if (!Array.isArray(cards) || cards.length !== chunk.length || new Set(cards.map(card => card.cardId)).size !== chunk.length
         || !cards.every(card => chunk.includes(card.cardId))) {
       throw new Error("AnkiConnect returned an incomplete card batch.");
     }

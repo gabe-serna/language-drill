@@ -1,4 +1,4 @@
-import type { ReviewExercise } from "./generation.ts";
+import type { ReviewExercise } from "../../../src/core/generation.ts";
 
 const pairs = [
   ["omitted-subject", true, "I read a book.", "本を読みました。"],

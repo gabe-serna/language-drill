@@ -1,3 +1,4 @@
+import { requestInference, type Inference } from "./inference.ts";
 import { guidance, levels, type Difficulty, type GrammarEntry } from "./grammar.ts";
 const politePast = "polite-past";
 type GrammarPlan = { difficulty: Difficulty; entries: GrammarEntry[]; targets: string[] };
@@ -25,7 +26,7 @@ type JapaneseSentence = { id: string; referenceJa: string };
 type Candidate = JapaneseSentence & { targetGrammarId: string };
 type FixedExpression = { headword: string; surfaces: string[] };
 export type VocabularyGate = { known: Set<string>; expressions: Map<string, FixedExpression[]> };
-type Analyze = (lines: string[]) => Promise<Token[][]>;
+export type Analyze = (lines: string[]) => Promise<Token[][]>;
 
 export async function buildVocabularyGate(known: Set<string>, analyze: Analyze): Promise<VocabularyGate> {
   const words = [...known];
@@ -111,8 +112,6 @@ const reviewerPrompt = [
   'Example: {"decisions":[{"id":"1","accepted":true},{"id":"2","accepted":false,"reason":"The time word conflicts with the completed action.","problemWords":["明日"]}]}',
 ].join("\n");
 
-export type Inference = (request: { systemPrompt: string; data: object; maxTokens: number }) =>
-  Promise<{ text: string; stop: string }>;
 export type ReviewExercise = Candidate & { english: string; verifiedPolitePastVerb?: string; unconfirmedLemmas?: string[] };
 type Word = { lemma: string; reading: string; meaning: string };
 type Decision = { accepted: boolean; reason: string; problemWords: string[]; words: Word[]; grammarIds?: string[] };
@@ -131,7 +130,7 @@ function issue(report: Diagnostic | undefined, path: string, expected: string, r
 }
 async function request(infer: Inference, systemPrompt: string, data: object, report?: Diagnostic, maxTokens = 850) {
   const start = Date.now();
-  const reply = await infer({ systemPrompt, data, maxTokens });
+  const reply = await requestInference(infer, { systemPrompt, data, maxTokens });
   const ms = Date.now() - start;
   if (reply.stop !== "stop") {
     issue(report, "stopReason", '"stop"', reply.stop, reply.stop === "length" ? "inference truncated at token limit" : "inference incomplete");
@@ -239,8 +238,8 @@ export async function translateBatch(sentences: JapaneseSentence[], infer: Infer
   return { ms: response.ms, translations, error: undefined };
 }
 
-type Stage = "generation" | "translation" | "validation";
-type ExpansionPolicy = { maxPercent: number; maxWordsPerExercise: number };
+export type Stage = "generation" | "translation" | "validation";
+export type ExpansionPolicy = { maxPercent: number; maxWordsPerExercise: number };
 export function expansionCapacity(knownCount: number, percent: number, size = 10) {
   if (percent === 100) return size - knownCount;
   return Math.min(size - knownCount, Math.floor(knownCount * percent / (100 - percent)));

@@ -1,14 +1,25 @@
 ﻿import assert from "node:assert/strict";
 import { test } from "node:test";
-import { sessionAudio, voicevox } from "./voicevox.ts";
+import { sessionAudio } from "../src/core/audio.ts";
+import { voicevox } from "../src/adapters/voicevox.ts";
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
+
+test("invalid audio from a replacement provider leaves replay unavailable", async () => {
+  let unavailable = false;
+  const session = sessionAudio(async () => new Uint8Array(12), async () => assert.fail("unexpected playback"));
+  session.preload("文");
+  session.replay("文", () => { unavailable = true; });
+  await tick();
+  assert.equal(unavailable, true);
+  await session.close();
+});
 
 test("prefetch stays silent, repeated play replaces playback and exit stops it", async () => {
   let requests = 0;
   let active = 0;
   let plays = 0;
-  const session = sessionAudio(async () => { requests++; return Buffer.alloc(1); }, async (_wav, signal) => {
+  const session = sessionAudio(async () => { requests++; return Buffer.from("RIFF0000WAVE"); }, async (_wav, signal) => {
     assert.equal(active++, 0);
     plays++;
     await new Promise(resolve => signal.addEventListener("abort", resolve, { once: true }));

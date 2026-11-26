@@ -40,10 +40,10 @@ Run `/study-benchmark easy`, `medium`, `hard`, or `mixed` in Pi, with optional `
 
 ## Tests
 
-From the project root with the Python environment above installed, run the regression suite. It uses synthetic fixtures, mocked model replies, and the local Sudachi analyzer.
+From the project root with the Python environment above installed, run the regression suite. It runs directly under Node without launching Pi, connecting to Anki or starting VOICEVOX. It uses synthetic fixtures, mocked providers, and the local Sudachi analyzer. See the [architecture](docs/ARCHITECTURE.md) for standalone entry points and provider contracts.
 
 ```powershell
-node --test .pi/extensions/study-benchmark/*.test.ts
+node --test tests/*.test.ts
 ```
 
 ## Manual study checks on Windows

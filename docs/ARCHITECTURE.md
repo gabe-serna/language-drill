@@ -1,28 +1,37 @@
 # Architecture
 
-The implemented application is the project-local Pi study and benchmark extension under `.pi/extensions/study-benchmark/`. See the [roadmap](ROADMAP.md) for planned study features.
+The study application has a portable TypeScript core in `src/core/`. The Windows Pi extension supplies the current interface and connects the core to local services. The [roadmap](ROADMAP.md) tracks milestone scope.
 
-## Components
+## Dependency boundaries
 
-| Component | Responsibility |
+| Location | Responsibility |
 | --- | --- |
-| `index.ts` | Registers the study and benchmark commands, launches the local Python analyzer, calls Pi's model registry, and renders the report. The command requires an idle interactive Pi session at the project root. |
-| `session.ts` | Parses study arguments, exposes the supported grammar, and tracks drafts, evaluated attempts, and outcomes, and drives progression using an injected view. |
-| `voicevox.ts` | Resolves the configured voice, runs audio query and synthesis, caches WAV bytes in session memory, and serializes cancellable Windows playback via PowerShell and .NET SoundPlayer. |
-| `grading.ts` | Builds isolated grading and reference explanation requests and validates structured model replies. |
-| `anki.ts` | Reads eligible Core 2000 cards via AnkiConnect v6 at `127.0.0.1:8765`. The query selects review cards outside learning and suspension. A review interval of at least 21 days marks a card as mature for sampling. |
-| `vocabulary.ts` | Merges known vocabulary by headword, reading, and meaning while preserving source provenance. Selects seeded practice samples and examples with known supporting vocabulary. Provides validated, atomic foundational vocabulary edits for explicit user actions. |
-| `analyze.py` | Returns Sudachi Mode C tokens with surface, dictionary form, part of speech, out-of-vocabulary status, and character offsets. |
-| `grammar.ts` | Loads the inventory and determines difficulty counts using largest remainders. |
-| `generation.ts` | Owns Japanese generation, deterministic coverage and duplicate checks, translation, review, refill selection, and metrics. |
-| `validator-cases.ts` | Supplies fixed translation and quality-review cases for focused commands. |
+| `src/core/prepare.ts`, `generation.ts` | Prepare drills from vocabulary entries, grammar catalog, expansion policy, analyzer and inference functions. Own tier allocation, batch limits, cross-batch duplicates, generation, translation, review, refills and final expansion limits. Report progress through an optional callback. |
+| `src/core/session.ts`, `grading.ts` | Run the in-memory attempt and reveal loop through injected view callbacks. Construct grading and breakdown prompts and validate replies. |
+| `src/core/grammar.ts`, `vocabulary.ts` | Validate grammar inventory and foundational entries, merge vocabulary with provenance, select practice samples, index examples, allocate difficulties and weight review recency. |
+| `src/core/inference.ts`, `audio.ts` | Define inference, synthesis and playback contracts. Audio session logic owns preload, caching, replay ordering and cancellation. |
+| `src/adapters/` | Read grammar configuration, access AnkiConnect, perform locked atomic foundational JSON edits, invoke Sudachi, synthesize WAV with VOICEVOX, and play it through Windows SoundPlayer. |
+| `.pi/extensions/study-benchmark/` | Register commands, parse arguments, select adapters, load settings, render screens and benchmark reports, bind keys, manage cancellation and collect optional in-memory diagnostics. |
 
-The Core 2000 adapter maps `Vocabulary-Kanji`, `Vocabulary-Kana`, `Vocabulary-English`, `Vocabulary-Pos`, and `Expression` to headword, reading, meaning, part of speech, and example.
+Dependencies point from the host to adapters and the core. Core modules import only other core modules and use standard JavaScript APIs. A standalone host can load the vocabulary and configuration, call `prepareQuestions`, then call `runQuestions` with its own editing, grading and reveal callbacks. The same `gradeAnswer` and `explainAnswer` functions serve each interface.
+
+### Inference, analysis and audio
+
+- An `Inference` function accepts a system prompt, a structured data payload and an output-token budget. It returns text and a stop reason. The core checks the envelope and validates the stage-specific JSON before accepting exercises or grades. Providers map completed responses to `stop` and token-budget truncation to `length`. Generation, translation, review, grading and explanation prompts live in the core.
+- The Pi implementation in `.pi/extensions/study-benchmark/inference.ts` reads the selected model on every request, serializes the payload and creates a fresh message context. Pi owns provider settings and authentication. A future direct API or local-model adapter can implement the same function. For a web host, place credentialed calls in a server-side adapter and expose application operations to the browser. Keep keys and authentication headers out of client bundles, prompt data and study records.
+- The analyzer accepts a batch of strings and returns one ordered token list per string. The Sudachi adapter resolves the local Python interpreter and script relative to its module, passes UTF-8 JSON over pipes, enforces cancellation and a timeout, and checks token tuple shapes.
+- An `AudioProvider` accepts reference text and an abort signal and returns WAV bytes as a `Uint8Array`. Playback is a separate cancellable function. VOICEVOX handles speaker discovery, query and synthesis. The Windows player handles the OS process. A different host can replace either function independently.
+
+### Storage and scheduling
+
+The read-only Anki adapter maps `Vocabulary-Kanji`, `Vocabulary-Kana`, `Vocabulary-English`, `Vocabulary-Pos`, and `Expression` to headword, reading, meaning, part of speech, and example. The standard query selects eligible review cards outside learning and suspension. Recent study also includes learning cards. An interval of at least 21 days marks an entry mature for sampling.
+
+Study state lasts for one invocation. Anki owns spaced-repetition scheduling. The core consumes maturity and review timestamps for selection. Grammar selection uses enabled inventory entries and tier eligibility. Persistent proficiency, adaptive difficulty and study history are future work. The application has no SQLite database or schema. A future SQLite or hosted adapter can supply the same entries and catalog to preparation. Foundational changes today require explicit authorization and use the file adapter.
 
 ## Workflow
 
 1. Import eligible Anki entries and foundational entries into an in-memory known vocabulary pool. Build an index of known expressions and choose a compact prompt sample using mature Anki entries and foundational vocabulary.
-2. Generate Japanese according to an enabled grammar and difficulty plan. The original benchmark uses polite past. Morphology checks known surfaces and lemmas, exact aligned expressions, and narrowly permitted particles and auxiliaries. The pipeline checks the polite-past ending where it is the sole target and checks exact Japanese duplicates, and tracks near-duplicates as a diversity signal.
+2. Generate Japanese according to an enabled grammar and difficulty plan. The original benchmark uses polite past. Morphology checks known surfaces and lemmas, exact aligned expressions, and narrowly permitted particles and auxiliaries. The current deterministic filter requires the sole target ID to be polite-past and checks the ending. It rejects exact Japanese duplicates and tracks near-duplicates as a diversity signal.
 3. Translate survivors in a separate call using Japanese sentences and IDs. Check the returned IDs and English duplicates.
 4. Review the paired exercises in a fresh call for grammar, naturalness, meaning and target fit. Supply polite-past evidence where the analyzer corroborates the verb form. For an unconfirmed lemma, the reviewer checks suitability and supplies a dictionary-form kana reading and contextual English gloss.
 5. Prefer known-only exercises. Hold eligible expanded exercises until the actual accepted count supports them under the percentage cap. Refills use rejection and diversity feedback, and can retire repeatedly implicated preferred targets. A full benchmark runs three seeded trials with ten exercise slots and up to two refills each.
